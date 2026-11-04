@@ -23,8 +23,9 @@ jobs:
         with:
           packages: platform-tools
       - run: |
-          sdkmanager --install "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
       - run: |
+          sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           chmod +x gradlew
           ./gradlew --no-daemon :app:testPilotV4UnitTest :app:compilePilotV4Kotlin --stacktrace
