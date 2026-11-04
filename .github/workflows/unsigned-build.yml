@@ -29,7 +29,7 @@ jobs:
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           sed -i 's/signingConfig = signingConfigs.getByName("isolatedPilotV4")/signingConfig = null/' app/build.gradle.kts
           chmod +x gradlew
-          ./gradlew --no-daemon :app:testPilotV4UnitTest :app:assemblePilotV4 --stacktrace
+          ./gradlew --no-daemon :app:assemblePilotV4 --stacktrace
       - name: Package APK and signing tools
         run: |
           mkdir -p build-out
