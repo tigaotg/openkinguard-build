@@ -2148,6 +2148,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         label = { Text("查找设置") },
                         modifier = Modifier.fillMaxWidth(), singleLine = true)
                     if (settingsFilter.isBlank()) {
+                        // Direct entry: no category expansion required for an elderly user.
+                        SettingsMenuEntry(SettingsDestination.REMOTE_ASSIST) {
+                            settingsSectionName = SettingsDestination.REMOTE_ASSIST.name
+                        }
                         SettingsMenuLayout.groups.forEach { group ->
                             val expanded = expandedSettingsGroup == group.title
                             SettingsGroupEntry(group, expanded) {

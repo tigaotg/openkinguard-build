@@ -66,9 +66,8 @@ internal data class SettingsGroup(val title: String, val description: String,
 
 internal object SettingsMenuLayout {
     val groups = listOf(
-        SettingsGroup("家人和设备", "连接家人、远程协助、找回手机", listOf(
-            SettingsDestination.PAIRING, SettingsDestination.REMOTE_ASSIST,
-            SettingsDestination.FIND)),
+        SettingsGroup("家人和设备", "连接家人、找回手机", listOf(
+            SettingsDestination.PAIRING, SettingsDestination.FIND)),
         SettingsGroup("权限和提醒", "应用权限、通知、失联提醒", listOf(
             SettingsDestination.SELF_CHECK, SettingsDestination.NOTICES,
             SettingsDestination.DAILY)),
