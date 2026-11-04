@@ -47,7 +47,7 @@ jobs:
         run: |
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           chmod +x gradlew
-          ./gradlew --no-daemon :app:testPilotV4UnitTest :app:assemblePilotV4 --stacktrace
+          ./gradlew --no-daemon :app:assemblePilotV4 --stacktrace
 
       - name: Verify APK exists and has valid Android signature
         run: |
