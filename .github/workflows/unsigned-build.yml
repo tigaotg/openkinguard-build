@@ -22,10 +22,11 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
-      - run: sdkmanager --install "platforms;android-37" "build-tools;36.0.0"
+      - run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build unsigned APK
         run: |
+          sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           sed -i 's/signingConfig = signingConfigs.getByName("isolatedPilotV4")/signingConfig = null/' app/build.gradle.kts
           chmod +x gradlew
           ./gradlew --no-daemon :app:testPilotV4UnitTest :app:assemblePilotV4 --stacktrace
