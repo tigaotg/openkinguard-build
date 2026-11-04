@@ -1,0 +1,73 @@
+name: OpenKinGuard Pilot V4 APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OKG_PILOT_V4_SIGNING_PASSWORD: ${{ secrets.OKG_PILOT_V4_SIGNING_PASSWORD }}
+    steps:
+      - name: Checkout open-source build repository
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK command-line tools and licenses
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 37 SDK and build tools
+        run: |
+          sdkmanager --install "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+
+      - name: Gradle build cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore signing key from GitHub Actions secrets
+        env:
+          OKG_PILOT_V4_KEYSTORE_B64: ${{ secrets.OKG_PILOT_V4_KEYSTORE_B64 }}
+        run: |
+          test -n "$OKG_PILOT_V4_SIGNING_PASSWORD" || { echo 'Signing password secret is missing'; exit 1; }
+          test -n "$OKG_PILOT_V4_KEYSTORE_B64" || { echo 'Signing keystore secret is missing'; exit 1; }
+          mkdir -p private-signing
+          printf '%s' "$OKG_PILOT_V4_KEYSTORE_B64" | base64 --decode > private-signing/openkinguard-pilot-v4.p12
+          chmod 600 private-signing/openkinguard-pilot-v4.p12
+
+      - name: Run tests and build signed APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testPilotV4UnitTest :app:assemblePilotV4 --stacktrace
+
+      - name: Verify APK exists and has valid Android signature
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/pilotV4 -maxdepth 1 -type f -name '*.apk' -print -quit)
+          test -n "$APK_FILE" || { echo 'No APK generated'; exit 1; }
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK_FILE"
+
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenKinGuard-0.9.17-PilotV4-signed
+          path: app/build/outputs/apk/pilotV4/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve test reports if build fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenKinGuard-PilotV4-test-reports
+          path: |
+            app/build/reports/tests/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
