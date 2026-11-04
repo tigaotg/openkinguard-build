@@ -22,11 +22,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK command-line tools and licenses
-        uses: android-actions/setup-android@v3
 
       - name: Install Android 37 SDK and build tools
         run: |
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install "platforms;android-37" "build-tools;36.0.0" "platform-tools"
 
       - name: Gradle build cache
