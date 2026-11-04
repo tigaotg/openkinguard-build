@@ -205,6 +205,18 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         showAssistControllerPanel =
             assistSession?.direction == RemoteAssistConsent.Direction.OUTGOING
     }
+    // One lightweight in-memory refresh per second while assisting; never poll
+    // the encrypted SOS/history snapshot for every JPEG frame on older phones.
+    LaunchedEffect(manager, assistSession?.sessionId) {
+        while (true) {
+            val current = manager.remoteAssistSession()
+            assistSession = current
+            assistPreview = manager.remoteAssistPreview()
+            assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
+            if (current == null) break
+            delay(1_000)
+        }
+    }
 
     fun navigateTo(destination: Int) {
         if (destination == 0) {
@@ -577,8 +589,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             backgroundListening = S1Runtime.isBackgroundListening()
             // Signed events also push updates immediately. Avoid excessive Compose/JSON work
             // on old Android 10 hardware while leaving request feedback responsive.
-            delay(if (assistSession != null) 1_500 else if (
-                requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
+            delay(if (requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
         }
     }
     val medicalTree = snapshot.history.medicalFolderTreeUri
@@ -769,7 +780,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             "请求已发送，请等待对方点击‘同意协助’。首次请求60秒内有效。"
                         RemoteAssistConsent.Phase.WAITING_FOR_PERSON -> "正在等待对方确认。"
                         RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
-                            "对方已同意。下一步必须由对方点击‘开始共享屏幕’，并通过安卓系统的屏幕共享确认。"
+                            "对方已同意。下一步必须由对方点击‘开始共享屏幕’，并通过安卓系统确认。" +
+                                "如果对方已经确认却仍没有画面，请让对方到‘设置 → 远程协助’查看画面发送状态。"
                         RemoteAssistConsent.Phase.ACTIVE ->
                             "已进入远程协助。只有对方另外开启了无障碍服务后，点击和滑动才会生效。"
                     })
