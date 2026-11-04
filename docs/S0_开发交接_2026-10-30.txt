@@ -1,0 +1,78 @@
+OpenKinGuard S0 开发交接（增量记录）
+日期：2026-10-30（北京时间）
+状态：S0 源码第一批已完成；纯 Kotlin 测试通过；Android 调试 APK 已构建，待真机安装
+
+【永远不得覆盖的需求基准】
+文件：docs/requirements/OpenKinGuard_统一客户端_129项需求与架构审查总册_2026-10-29.txt
+SHA-256：42ddb0fa3be4f84f0efa1272614cba64791d7e148e67d5e6b521af5eeb910461
+完整 001—129 项没有被此次开发修改。早期128项优先级仅作历史参考。
+
+【本次已创建】
+本地 Git 主分支：main（未创建远程 GitHub 仓库、未推送）
+项目名：OpenKinGuard / 开源家人守护（正式名称待商标和可用性核实）
+实验包名：io.github.tigaotg.openkinguard.debug
+正式包名预留：io.github.tigaotg.openkinguard
+最低系统：Android 10（minSdk 29）
+技术选型：Kotlin + Jetpack Compose；Android Gradle Plugin 9.3.1 + Gradle 9.5.0
+
+模块：
+  app — 唯一Android APK，模拟我发出的SOS/收到的SOS，明确标识实验版
+  core:model — UserId/DeviceId/RelationId/EventId/MessageId/AttemptId、双时钟、关系、事件、Outbox模型
+  core:contracts — 标准心率/位置/消息/存储/报警动作/日志接口
+  core:engine — 完全无Android依赖的纯 Kotlin 判定引擎
+  adapters:mock — 模拟数据与无发送能力的网络/急救适配器
+
+绝对不能将“我发出的求助”“我收到的求助”理解成两套不同安装包或互斥角色。
+帮助关系是有向授权：A帮助B不自动授予B帮助A的权限。一个人可以帮助多人，也可被多人帮助。
+
+【经过执行的测试证据】
+命令：gradle --no-daemon :core:engine:test :adapters:mock:test
+纯核心：16项成功 / 0失败 / 0跳过
+模拟适配器：5项成功 / 0失败 / 0跳过
+总计：21项成功 / 0失败。Gradle 显示 BUILD SUCCESSFUL。
+另已成功编译 adapters:mock:compileKotlin。
+
+Android APK：已生成，尚未测试真机安装。用户明确表示已理解并接受 Google Android SDK License，
+并授权本次临时环境代为确认；随后交互式输入y并安装Android SDK Platform 37.0、
+Build Tools 36.0.0。Gradle命令 :app:assembleDebug 返回 BUILD SUCCESSFUL in 1m 4s。
+APK版本：io.github.tigaotg.openkinguard.debug / 0.0.1-s0；minSdk=29、targetSdk=36、compileSdk=37。
+签名：仅Android Debug，apksigner v2核验通过，不适合正式公开发行。
+本次调试 APK SHA-256：d7c61f5a0300dcc55c4b350cbf54e5c53e8fa06700b71083f92a7178d1960c85。
+调试签名由本次环境的临时调试密钥生成，未来构建不保证沿用同一密钥；
+不要依赖测试包的原地升级连续性，卸载调试包可能清除S0应用数据。
+权限：aapt检查没有定位、蓝牙、短信、电话或互联网权限，仅AndroidX内部动态接收器权限。
+GitHub CI 尚未实际运行；实体手机安装、前后台体验测试仍待完成。
+
+【已研究但没有抄源码或提前引入】
+Kotlin coroutines — https://github.com/Kotlin/kotlinx.coroutines — Apache-2.0
+Kotlin serialization — https://github.com/Kotlin/kotlinx.serialization — Apache-2.0
+ZXing Android Embedded — https://github.com/journeyapps/zxing-android-embedded — Apache-2.0（S1扫码）
+MapLibre Native — https://github.com/maplibre/maplibre-native — BSD-2-Clause（S3地图）
+jvm-libp2p — https://github.com/libp2p/jvm-libp2p — Apache-2.0/MIT候选（S2须实测）
+WebRTC — https://webrtc.googlesource.com/src — BSD-3-Clause候选（S2须实测）
+当前仅通过官方依赖获取构建工具、AndroidX及JUnit；没有复制第三方实现到代码目录。
+
+【注意事项】
+1. S0没有真实网络、BLE、GPS、后台定位、短信、电话、接手同步和认证密钥。
+2. 没有心率数据≠心脏停止；心率正常≠事故结案；本地生成命令≠外部收到通知。
+3. 任何来自远端的实际事件在交给决策核心之前，必须完成验签、授权、抗重放与消息去重。
+4. 未经用户允许不能发送收费短信、拨打电话或声明可自动联系专业急救。
+5. 不可用的Android后台能力必须降级并明示，不得承诺手机永远在线。
+6. 华为手环8心率广播需手动开启且易关闭，不得声称24小时自动连续监护。
+7. 只增加真实需要的模块；更换厂商适配器或通信协议不应要求改写纯决策核心。
+8. 不要将正在开发的实验版本用于真实紧急求助或医学诊断。
+9. 正式公开之前补充完整GPLv3许可证文本和三方许可证声明，核实商标和包名。
+
+【下一步计划】
+1. 下载并在用户的Android 10+实体手机安装已生成的S0调试APK，确认界面、按钮和状态；测试版本不得用于真实求救。
+2. 至少两台不同系统的真机执行S0本机模拟，记录机型、系统版本、崩溃和后台限制。
+3. 开始S1：真实本地密钥身份、扫码配对、独立双向授权、LAN经签名验证的SOS收发和回执。
+4. 再做跨网P2P/中继实测、收费报警权限研究；不要跳过身份与消息真实性。
+5. 任何完成标记必须来自真实代码、测试日志或设备验收，不能用规划替代。
+
+【常用命令】
+./gradlew :core:engine:test :adapters:mock:test
+./gradlew :app:assembleDebug
+
+详细模块说明见 README.md，验证矩阵见 docs/S0_ACCEPTANCE.md、ANDROID_CAPABILITY_MATRIX.md。
+本文件是新增开发进度记录，不会替换或修改129项主需求文件。

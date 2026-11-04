@@ -1,0 +1,15 @@
+private-signing/
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+**/__pycache__/
+*.py[cod]
+.DS_Store

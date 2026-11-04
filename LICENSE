@@ -1,0 +1,12 @@
+OpenKinGuard - Copyright (C) 2026 OpenKinGuard contributors
+
+SPDX-License-Identifier: GPL-3.0-only
+
+The OpenKinGuard Android application is licensed under the GNU General Public
+License, version 3 (GPL-3.0-only).
+
+The complete GPLv3 license text is bundled in the accompanying COPYING file.
+
+Before making a public source or binary release, audit all applicable third-party
+licenses and attribution notices. A separate public relay, when implemented,
+is intended to be licensed under AGPL-3.0-only instead.

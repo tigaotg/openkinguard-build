@@ -1,0 +1,32 @@
+OpenKinGuard Family Relay 0.1.0 — Third-party attribution and license notes
+2026-11-01
+
+OpenKinGuard relay source (relay.py): adapted from the OpenKinGuard project's
+existing AGPLv3 relay implementation, with additional family allowlisting,
+limits, OpenWrt compatibility, Linux privilege dropping and tests.
+Project / contributions: OpenKinGuard contributors.
+Project license for the relay: AGPL-3.0-only. Full license text:
+https://www.gnu.org/licenses/agpl-3.0.html
+When offering this service to remote users, comply with AGPLv3 source-offer
+obligations for the modified network-service code.
+
+Third-party runtime technologies (their code is not bundled in the installer):
+- Python language/runtime: Python Software Foundation and contributors,
+  Python Software Foundation License (PSF-2.0): https://docs.python.org/3/license.html
+- websockets library: Aymeric Augustin and contributors, BSD-3-Clause:
+  https://github.com/python-websockets/websockets
+- cryptography library: Python Cryptographic Authority and contributors,
+  Apache-2.0 OR BSD-3-Clause:
+  https://github.com/pyca/cryptography
+- OpenWrt OS, apk package management integration, procd supervision, UCI,
+  rpcd, LuCI JS: OpenWrt Project and respective contributors, multiple
+  upstream licenses. Source: https://git.openwrt.org/
+- WebSocket standard RFC 6455: IETF, source:
+  https://www.rfc-editor.org/rfc/rfc6455
+- TLS 1.2+ transport: IETF standards and Python ssl / OpenSSL runtime.
+- ECDSA/P-256 and SHA-256 identity proofs: cryptographic standards implemented
+  by the OpenKinGuard application and the cryptography library.
+
+All upstream packages must be installed from their proper OpenWrt package
+feeds. The installer does not redistribute a proprietary component or a
+third-party library binary. Android APK is distributed separately.

@@ -1,0 +1,8 @@
+{
+  "admin/services/openkinguard-relay": {
+    "title": "OpenKinGuard 家庭中继",
+    "order": 91,
+    "action": { "type": "view", "path": "services/openkinguard-relay" },
+    "depends": { "acl": [ "luci-app-openkinguard-relay" ] }
+  }
+}

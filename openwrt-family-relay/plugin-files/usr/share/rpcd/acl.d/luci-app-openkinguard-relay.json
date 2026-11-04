@@ -1,0 +1,10 @@
+{
+  "luci-app-openkinguard-relay": {
+    "description": "OpenKinGuard family relay settings and fixed owner enrollment commands",
+    "read": { "uci": [ "openkinguard-relay" ] },
+    "write": {
+      "uci": [ "openkinguard-relay" ],
+      "file": { "/usr/lib/openkinguard-relay/manage-join": [ "exec" ] }
+    }
+  }
+}

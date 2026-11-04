@@ -1,0 +1,50 @@
+OpenKinGuard 0.9.5 QR Pilot 独立测试 APK
+日期：2026-11-01
+
+构建结果
+- Android SDK 37.0、Build-Tools 37、JDK 17、Gradle 9.5
+- 0.9.5 / versionCode 40；最低 Android 10（API 29），目标 API 36。
+- Android 单元测试 23 项通过；OpenWrt 0.3.0 中继端 21 项通过。
+- APK 已执行 APK Signature Scheme v2 验签成功，签名 EC P-256。
+- 包名：io.github.tigaotg.openkinguard.debug.qrpilot
+- 签名证书 SHA-256：
+  6e68b6513da379845e3921bf41e1bf20702611dca8450b5d031ca71c9783ac80
+- 独立测试 APK 文件长度：39561658 字节。
+- APK SHA-256：
+  50400757f162d1a813395a13dcf0b978acb4865682e8bd6d6b2a88fc557eb5a0
+- 这不是正式生产版或已完成公网真机验收的急救应用。
+
+安装与旧版关系
+1. 这是用户选择的方案 B：独立包名和专用签名，与 0.9.4 healthPilot 并存。
+2. 可以直接安装，不需要卸载旧版；旧版身份、绑定、历史记录不变。
+3. 新 QR Pilot 有全新的 Android Keystore 身份；两台手机需重新完成帮助关系绑定。
+4. OpenWrt 0.3.0 扫码仅授予私人中继接入资格，不自动授予救助/定位权限。
+5. 手机 AOSP 10 和 Android 17 都满足最低系统版本；仍需真实安装确认。
+
+扫码联调
+1. 将 OpenWrt 中继更新到 0.3.0，并从 LuCI 启动（安装默认不改 WAN）。
+2. 如需路由器生成二维码，通过 OpenWrt 自己的软件源安装 qrencode。
+3. LuCI：服务 → OpenKinGuard 家庭中继 → 生成限时加入二维码。
+4. 手机：设置 → 公网通信 → 私人中继 → 扫描家庭节点二维码。
+5. 手机核对完整路由器 SPKI 指纹后提交；路由器主人核对手机指纹并批准。
+6. 两台手机分别扫码批准（每张二维码只允许一次申请）；验证双方同一中继在线。
+7. 先在 LAN 验证签名 PING / SOS 演练回执，后在双移动数据网络下验证。
+8. 中继“已连接”并不表示 SOS 送达；应以远端设备有效签名回执为准。
+
+未来更新的签名备份
+- 为 qrPilot 新建的测试私钥不包含在完整源码压缩包，也不包含在 APK 中。
+- 已单独创建 `OpenKinGuard_QR_Pilot_0.9.5_签名密钥_AES256加密备份.enc`。
+- 加密算法：AES-256-CBC、PBKDF2-HMAC-SHA256、250000 次迭代、随机盐。
+- 备份解密口令须单独妥善保管；丢失口令或备份文件，便无法用同一证书继续升级。
+- 解密后 keystore 文件必须保存到项目根目录下：
+    private-signing/openkinguard-qr-pilot-dev.keystore
+- 用 OpenSSL 解密（程序会提示输入备份口令）：
+    openssl enc -d -aes-256-cbc -pbkdf2 -iter 250000 -md sha256 -in 备份文件.enc -out private-signing/openkinguard-qr-pilot-dev.keystore
+- 测试 keystore 内部密码：android；别名：androiddebugkey。
+- 然后运行 `./gradlew :app:assembleQrPilot`，可用相同签名升级这个 qrPilot 包。
+- 这是开发测试证书，不能直接充当正式生产/应用商店发行签名。
+
+安全限制
+- 普通 SOS/报平安业务帧仍未全部实现端到端加密；自家中继可看到部分内容。
+- 依赖 Android 后台保活、运营商 IPv6、公网入站与用户主动授权；未经双机
+  真机验证之前，不应用于实际急救生命安全保证。

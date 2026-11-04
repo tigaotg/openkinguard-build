@@ -1,0 +1,5 @@
+# Replace relay.example.cn with the DNS name pointing at your own reachable host.
+# Caddy obtains/renews a trusted TLS certificate when port 80/443 is reachable.
+relay.example.cn {
+    reverse_proxy 127.0.0.1:8765
+}

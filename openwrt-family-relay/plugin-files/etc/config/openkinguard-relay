@@ -1,0 +1,10 @@
+config relay 'main'
+	option enabled '0'
+	option listen 'both'
+	option port '9443'
+	option cert '/etc/ssl/openkinguard/fullchain.pem'
+	option key '/etc/ssl/openkinguard/privkey.pem'
+	option max_clients '16'
+	option rate_kbps '25000'
+	# 通过 LuCI 的一次性二维码申请、由管理员批准后自动加入允许列表。
+	# 空白白名单只允许提交待批准申请，不能转发应用业务消息。

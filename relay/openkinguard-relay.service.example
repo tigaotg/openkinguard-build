@@ -1,0 +1,22 @@
+# Optional Linux systemd service (not suitable for Windows auto-start by itself).
+# Install under /etc/systemd/system/openkinguard-relay.service after adjusting paths.
+# Ensure the dedicated service account and .venv are already created.
+[Unit]
+Description=OpenKinGuard authenticated local relay (behind TLS reverse proxy)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=okg-relay
+WorkingDirectory=/opt/OpenKinGuard
+ExecStart=/opt/OpenKinGuard/.venv/bin/python /opt/OpenKinGuard/relay/openkinguard_relay.py --listen 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

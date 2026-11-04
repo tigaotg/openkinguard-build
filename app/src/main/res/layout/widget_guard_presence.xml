@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_presence_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center_vertical"
+    android:padding="12dp"
+    android:background="#FFFFFF">
+    <TextView android:id="@+id/widget_presence_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="OpenKinGuard · 家人在线"
+        android:textStyle="bold"
+        android:textSize="13sp"
+        android:textColor="#242424" />
+    <TextView android:id="@+id/widget_presence_count"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:text="在线状态待确认"
+        android:textSize="14sp"
+        android:textColor="#6851A5" />
+    <TextView android:id="@+id/widget_presence_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="非实时 · 点开检查"
+        android:textSize="11sp"
+        android:textColor="#555555" />
+</LinearLayout>

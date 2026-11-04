@@ -1,0 +1,40 @@
+OpenKinGuard 0.5.1 自建公网中继（2026-10-31）
+
+本版本由用户自行在电脑或 OpenWrt 路由器部署，不是官方公共服务器。
+两台手机需已经用 OpenKinGuard 配对，并在 App → 设置 → 公网通信填写相同的中继地址。
+
+【电脑 / Ubuntu / WSL（推荐先用此方法）】
+1. 安装 Python 3.10+。
+2. 在项目 OpenKinGuard 根目录执行：
+   python3 -m venv .venv
+   . .venv/bin/activate
+   pip install -r relay/requirements.txt
+   python3 relay/openkinguard_relay.py --listen 127.0.0.1 --port 8765
+3. 用 Caddy 将公网域名的 HTTPS/WSS 443 端口代理到 127.0.0.1:8765。
+   Caddyfile 示例在 relay/Caddyfile.example；将 relay.example.cn 换成你的域名。
+4. 手机上填 wss://你的域名/relay，两端分别点击保存并启用。
+   0.5.1 可以每行填一个地址，最多3个；电脑和路由器可以分别作为不同中继。
+5. 需要 Linux 开机自启可参考 relay/openkinguard-relay.service.example，须修改运行用户和实际路径。
+   Windows/WSL 只有在电脑运行、WSL 及服务真正启动时才在线。
+
+【OpenWrt 路由器】
+- 方案A（更省路由器存储）：OpenWrt 提供 DDNS、TCP/443 端口转发至电脑；电脑同时运行 Caddy 和 Python 中继，后者仍绑定电脑自己的 127.0.0.1。
+- 方案B（路由器单独运行）：只有固件能安装 Python 3、websockets、cryptography，且内存/闪存足够时，才能运行同一个 Python 程序。
+- 不建议将 OpenWrt 管理后台暴露公网；不在本版本中自动修改端口映射与防火墙。
+
+【公网可达条件】
+- 家庭宽带可能没有公网 IPv4。如果仅有公网 IPv6，外网手机也必须能用 IPv6。
+- 正式使用需要可信的 TLS 证书，不能在手机端输入 ws:// 明文地址。
+- 手机退出前台/被系统省电机制杀死后不能保证收信，当前服务端不存储离线消息。
+- 这是自测用基础通信版本，不保证急救可靠性；请勿替代报警电话或紧急救援。
+
+【已经实现】
+身份签名认证、两机实时转发、局域网优先、可选公网中继、最多三个中继并行连接、顺序尝试、GPS 现有端到端加密、故障原因反馈。
+测试 SOS 与报平安可在接收方离线时通过中继 RAM 暂存最多5分钟，但须在手机设置中额外明确授权，默认关闭（受队列容量限制）。
+**暂存不是送达确认**，节点重启、过期或未重新连入相同节点都会使通知丢失。
+【尚未实现】
+用户家中实际安装部署、跨网双机真机检验、完整消息端到端加密、持久离线消息队列、P2P 穿透和中继之间的数据同步。
+
+开发及安全说明：docs/S2_PUBLIC_RELAY_2026-10-31.md
+新版增量：docs/S2_RELAY_RESILIENCE_2026-10-31.md
+自动测试：python3 -m unittest discover -s relay -p 'test_*.py' -v

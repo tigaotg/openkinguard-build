@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "community.moss-example",
+  "name": "青苔守护（示例）",
+  "author": "OpenKinGuard 示例贡献者",
+  "license": "CC0-1.0",
+  "mode": "light",
+  "primary": "#216649",
+  "secondary": "#657A4A",
+  "background": "#F4F8F0",
+  "surface": "#FFFFFF"
+}
