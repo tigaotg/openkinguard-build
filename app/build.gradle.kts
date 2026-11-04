@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 52
-        versionName = "0.9.17-remote-assist-pilot"
+        versionCode = 53
+        versionName = "0.9.18-remote-assist-ux-fix"
     }
 
     buildTypes {

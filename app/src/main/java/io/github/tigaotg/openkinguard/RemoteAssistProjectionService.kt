@@ -67,21 +67,25 @@ class RemoteAssistProjectionService : Service() {
             intent?.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
         else intent?.getParcelableExtra(EXTRA_RESULT_DATA)
         if (requestedId.isBlank() || code != android.app.Activity.RESULT_OK || resultData == null) {
+            transferStatus = "屏幕共享授权信息不完整"
             stopSelf(); return START_NOT_STICKY
         }
         createChannel()
         try {
             startForeground(NOTIFICATION_ID, buildNotification(),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            transferStatus = "系统前台服务无法启动：${error.javaClass.simpleName}"
             stopSelf()
             return START_NOT_STICKY
         }
         val manager = S1Runtime.manager(applicationContext)
         if (!manager.screenShareStarted(requestedId)) {
+            transferStatus = "远程协助请求已经失效，请重新申请"
             stopSelf(); return START_NOT_STICKY
         }
         sessionId = requestedId
+        transferStatus = "系统已授权，正在准备画面"
         main.postDelayed(authorizationWatchdog, 5_000L)
         try {
             val service = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
@@ -139,21 +143,27 @@ class RemoteAssistProjectionService : Service() {
                     val bytes = out.toByteArray()
                     worker.execute {
                         try {
-                            if (!closing.get() && bytes.size in 100..75_000)
+                            if (!closing.get() && bytes.size in 100..75_000) {
                                 manager.sendRemoteAssistFrame(requestedId,
                                     targetWidth, targetHeight, bytes)
-                        } catch (_: Exception) {
-                            // A transient direct-network loss drops this frame; no relay fallback.
+                                transferStatus = "画面已通过直连发送"
+                            }
+                        } catch (error: Exception) {
+                            // Never fall back to relays. Show a local reason instead of hiding it.
+                            transferStatus = "画面发送失败：${error.message?.take(100)
+                                ?: error.javaClass.simpleName}"
                         } finally { sending.set(false) }
                     }
-                } catch (_: Exception) {
+                } catch (error: Exception) {
+                    transferStatus = "画面处理失败：${error.javaClass.simpleName}"
                     sending.set(false)
                 } finally { image.close() }
             }, handler)
             virtualDisplay = active.createVirtualDisplay("OpenKinGuard-assisted-screen",
                 width, height, dpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 requireNotNull(reader).surface, null, handler)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            transferStatus = "屏幕捕获启动失败：${error.javaClass.simpleName}"
             requestStop()
         }
         return START_NOT_STICKY
@@ -183,6 +193,7 @@ class RemoteAssistProjectionService : Service() {
         runCatching { projection?.stop() }
         captureThread?.quitSafely()
         worker.shutdownNow()
+        if (transferStatus == "画面已通过直连发送") transferStatus = "共享已经结束"
         super.onDestroy()
     }
 
@@ -208,6 +219,8 @@ class RemoteAssistProjectionService : Service() {
     }
 
     companion object {
+        @Volatile private var transferStatus = "尚未开启屏幕共享"
+        fun currentTransferStatus(): String = transferStatus
         const val EXTRA_SESSION_ID = "io.github.tigaotg.openkinguard.ASSIST_SESSION"
         const val EXTRA_RESULT_CODE = "io.github.tigaotg.openkinguard.ASSIST_CODE"
         const val EXTRA_RESULT_DATA = "io.github.tigaotg.openkinguard.ASSIST_GRANT"

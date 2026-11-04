@@ -74,6 +74,8 @@ fun PairingSection() {
         }
         Button(onClick = {
             scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setCaptureActivity(PortraitQrCaptureActivity::class.java)
+                .setOrientationLocked(true)
                 .setPrompt(context.getString(R.string.pairing_scan_prompt)).setBeepEnabled(false))
         }) { Text(stringResource(R.string.pairing_scan_invite)) }
     } else {
@@ -101,6 +103,8 @@ fun PairingSection() {
                 PairingPhase.WAIT_ACK)) {
             Button(onClick = {
                 scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setCaptureActivity(PortraitQrCaptureActivity::class.java)
+                    .setOrientationLocked(true)
                     .setPrompt(context.getString(R.string.pairing_scan_prompt)).setBeepEnabled(false))
             }) { Text(stringResource(R.string.pairing_scan_reply)) }
         }

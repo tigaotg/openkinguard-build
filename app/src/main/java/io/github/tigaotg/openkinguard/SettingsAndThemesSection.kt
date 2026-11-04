@@ -39,6 +39,7 @@ enum class SettingsDestination(val label: String, val summary: String) {
     HOME("设置", ""),
     QUICK("功能指南", "了解常用功能和入口"),
     PAIRING("连接家人", "绑定家人的手机、修改昵称与授权"),
+    REMOTE_ASSIST("远程协助", "屏幕共享、远程点击权限、会话状态与操作指引"),
     SELF_CHECK("应用权限", "通知、定位、蓝牙权限与本机检测"),
     DAILY("失联与电量提醒", "调整提醒时间和电量阈值"),
     NOTICES("通知设置", "通知权限、弹窗和本机提醒测试"),
@@ -65,8 +66,9 @@ internal data class SettingsGroup(val title: String, val description: String,
 
 internal object SettingsMenuLayout {
     val groups = listOf(
-        SettingsGroup("家人和设备", "连接家人、找回手机", listOf(
-            SettingsDestination.PAIRING, SettingsDestination.FIND)),
+        SettingsGroup("家人和设备", "连接家人、远程协助、找回手机", listOf(
+            SettingsDestination.PAIRING, SettingsDestination.REMOTE_ASSIST,
+            SettingsDestination.FIND)),
         SettingsGroup("权限和提醒", "应用权限、通知、失联提醒", listOf(
             SettingsDestination.SELF_CHECK, SettingsDestination.NOTICES,
             SettingsDestination.DAILY)),

@@ -56,6 +56,10 @@
                 <data android:scheme="openkinguard" android:host="invite" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".PortraitQrCaptureActivity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
         <receiver
             android:name=".GuardStatusWidgetProvider"
             android:exported="true">

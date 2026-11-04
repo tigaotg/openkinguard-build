@@ -75,7 +75,12 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     val handler = remember { Handler(Looper.getMainLooper()) }
     var snapshot by remember { mutableStateOf(manager.snapshot()) }
     var assistSession by remember { mutableStateOf(manager.remoteAssistSession()) }
+    var assistPreview by remember { mutableStateOf(manager.remoteAssistPreview()) }
     var assistStartFeedback by remember { mutableStateOf("") }
+    var assistTransferStatus by remember {
+        mutableStateOf(RemoteAssistProjectionService.currentTransferStatus())
+    }
+    var showAssistControllerPanel by remember { mutableStateOf(false) }
     val sharePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()) { result ->
         val permission = result.data
@@ -193,6 +198,13 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     // All sections start at their own header; reusing the same ScrollState no longer
     // strands an older phone halfway down a newly opened settings screen.
     LaunchedEffect(page, settingsSectionName) { pageScroll.scrollTo(0) }
+
+    // A helper's response should never disappear inside a collapsed device card.
+    // Reopen on each actual phase transition, but respect an explicit minimize.
+    LaunchedEffect(assistSession?.sessionId, assistSession?.phase) {
+        showAssistControllerPanel =
+            assistSession?.direction == RemoteAssistConsent.Direction.OUTGOING
+    }
 
     fun navigateTo(destination: Int) {
         if (destination == 0) {
@@ -399,6 +411,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     fun refresh() { handler.post {
         snapshot = manager.snapshot()
         assistSession = manager.remoteAssistSession()
+        assistPreview = manager.remoteAssistPreview()
+        assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
         GuardWidgetPublisher.publishFromManager(context, manager)
     } }
     if (relayJoinInvite != null) {
@@ -509,6 +523,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 refreshing = false
                 snapshot = manager.snapshot()
                 assistSession = manager.remoteAssistSession()
+                assistPreview = manager.remoteAssistPreview()
+                assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             }
         }, "okg-s1-task").start()
     }
@@ -555,11 +571,14 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             }
             snapshot = manager.snapshot()
             assistSession = manager.remoteAssistSession()
+            assistPreview = manager.remoteAssistPreview()
+            assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             GuardWidgetPublisher.publishFromManager(context, manager)
             backgroundListening = S1Runtime.isBackgroundListening()
             // Signed events also push updates immediately. Avoid excessive Compose/JSON work
             // on old Android 10 hardware while leaving request feedback responsive.
-            delay(if (requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
+            delay(if (assistSession != null) 1_500 else if (
+                requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
         }
     }
     val medicalTree = snapshot.history.medicalFolderTreeUri
@@ -714,9 +733,15 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         "远程点击权限已开启。" else
                         "目前尚未开启辅助功能，家人只能查看画面，不能点击。",
                         style = MaterialTheme.typography.bodySmall)
+                    Text("开启远程点击的方法：\n" +
+                        "① 点击下方按钮打开手机的‘无障碍／辅助功能’设置。\n" +
+                        "② 找到‘已下载的应用’、‘已安装的服务’或类似入口。\n" +
+                        "③ 选择‘OpenKinGuard 远程协助（手动开启）’，打开开关并确认系统提示。\n" +
+                        "④ 返回本软件，确认显示‘远程点击权限已开启’，再点击‘开始共享屏幕’。",
+                        style = MaterialTheme.typography.bodySmall)
                     OutlinedButton(onClick = {
                         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }) { Text("设置可远程点击（可选）") }
+                    }) { Text("① 打开无障碍设置，按照上述步骤开启") }
                     InlineActionFeedback(assistStartFeedback)
                 }
             },
@@ -728,6 +753,84 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             dismissButton = { TextButton(onClick = {
                 runTask("结束远程协助") { manager.stopRemoteAssist() }
             }) { Text("取消协助") } })
+    }
+
+    // The control screen lives outside the per-device expand/collapse state.
+    // It is opened immediately after sending a request and again on consent/frame transitions.
+    assistSession?.takeIf { it.direction == RemoteAssistConsent.Direction.OUTGOING &&
+        showAssistControllerPanel }?.let { session ->
+        AlertDialog(onDismissRequest = { showAssistControllerPanel = false },
+            title = { Text("远程协助 · ${peerName(session.relationId, session.peerFingerprint)}") },
+            text = {
+                Column(Modifier.heightIn(max = 530.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(when (session.phase) {
+                        RemoteAssistConsent.Phase.WAITING_FOR_REPLY ->
+                            "请求已发送，请等待对方点击‘同意协助’。首次请求60秒内有效。"
+                        RemoteAssistConsent.Phase.WAITING_FOR_PERSON -> "正在等待对方确认。"
+                        RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
+                            "对方已同意。下一步必须由对方点击‘开始共享屏幕’，并通过安卓系统的屏幕共享确认。"
+                        RemoteAssistConsent.Phase.ACTIVE ->
+                            "已进入远程协助。只有对方另外开启了无障碍服务后，点击和滑动才会生效。"
+                    })
+                    if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
+                        val preview = assistPreview
+                        val bitmap = remember(preview?.receivedAt) {
+                            preview?.let { BitmapFactory.decodeByteArray(it.jpeg, 0,
+                                it.jpeg.size)?.asImageBitmap() }
+                        }
+                        if (preview != null && bitmap != null) {
+                            Image(bitmap = bitmap,
+                                contentDescription = "已同意的远程手机画面，点击发送触摸",
+                                contentScale = ContentScale.FillBounds,
+                                modifier = Modifier.fillMaxWidth()
+                                    .aspectRatio(preview.width.toFloat() /
+                                        preview.height.coerceAtLeast(1).toFloat())
+                                    .pointerInput(session.sessionId) {
+                                        detectTapGestures { pos ->
+                                            runTask("远程点击") {
+                                                manager.sendRemoteAssistTap(
+                                                    (pos.x / size.width * 10000).toInt().coerceIn(0, 10000),
+                                                    (pos.y / size.height * 10000).toInt().coerceIn(0, 10000))
+                                            }
+                                        }
+                                    })
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(enabled = !busy, onClick = {
+                                    runTask("远程返回") { manager.sendRemoteAssistBack() }
+                                }) { Text("返回") }
+                                OutlinedButton(enabled = !busy, onClick = {
+                                    runTask("远程主页") { manager.sendRemoteAssistHome() }
+                                }) { Text("主页") }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(enabled = !busy, onClick = {
+                                    runTask("远程上滑") { manager.sendRemoteAssistSwipe(
+                                        5000, 7800, 5000, 2600) }
+                                }) { Text("向上滑") }
+                                OutlinedButton(enabled = !busy, onClick = {
+                                    runTask("远程下滑") { manager.sendRemoteAssistSwipe(
+                                        5000, 2600, 5000, 7800) }
+                                }) { Text("向下滑") }
+                            }
+                        } else Text("正在等待第一帧画面。若超过10秒无画面，请检查对方" +
+                            "是否完成安卓录屏授权、双方是否局域网认证在线。",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    InlineActionFeedback(actionFeedback["远程点击"])
+                    InlineActionFeedback(actionFeedback["远程返回"])
+                    InlineActionFeedback(actionFeedback["远程主页"])
+                    InlineActionFeedback(actionFeedback["远程上滑"])
+                    InlineActionFeedback(actionFeedback["远程下滑"])
+                }
+            },
+            confirmButton = { TextButton(enabled = !busy, onClick = {
+                showAssistControllerPanel = false
+                runTask("结束远程协助") { manager.stopRemoteAssist() }
+            }) { Text("结束协助") } },
+            dismissButton = { TextButton(onClick = {
+                showAssistControllerPanel = false
+            }) { Text("收起窗口") } })
     }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background, bottomBar = {
@@ -765,9 +868,33 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             color = MaterialTheme.colorScheme.error)
                         Text("仅此次家人协助有效；关闭应用、点击下方按钮，" +
                             "或点击通知栏“立即停止协助”都可以终止。")
+                        Text("画面状态：$assistTransferStatus",
+                            style = MaterialTheme.typography.bodySmall)
                         Button(onClick = { runTask("结束远程协助") {
                             manager.stopRemoteAssist()
                         } }) { Text("立即结束远程协助") }
+                    }
+                }
+            }
+            assistSession?.takeIf {
+                it.direction == RemoteAssistConsent.Direction.OUTGOING
+            }?.let { session ->
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth().padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text("远程协助请求", style = MaterialTheme.typography.titleMedium)
+                            Text(when (session.phase) {
+                                RemoteAssistConsent.Phase.WAITING_FOR_REPLY -> "等待对方同意"
+                                RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
+                                    "对方已同意，等待系统屏幕共享授权"
+                                RemoteAssistConsent.Phase.ACTIVE -> "已连接，点击查看控制画面"
+                                else -> "等待对方确认"
+                            }, style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(onClick = { showAssistControllerPanel = true }) {
+                            Text("查看协助")
+                        }
                     }
                 }
             }
@@ -1007,7 +1134,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         }, style = MaterialTheme.typography.bodySmall)
                                         if (session.direction == RemoteAssistConsent.Direction.OUTGOING &&
                                             session.phase == RemoteAssistConsent.Phase.ACTIVE) {
-                                            val preview = manager.remoteAssistPreview()
+                                            val preview = assistPreview
                                             if (preview != null) {
                                                 val imageBitmap = remember(preview.receivedAt) {
                                                     BitmapFactory.decodeByteArray(preview.jpeg, 0,
@@ -2188,6 +2315,56 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }) { Text("查看当前电量") }
                     InlineActionFeedback(batteryReport)
                 }
+                if (settingsSection == SettingsDestination.REMOTE_ASSIST) {
+                    Text("远程协助由已绑定的家人主动申请。老人每次必须亲自同意，" +
+                        "Android 还会再次询问是否共享屏幕；任何时候都能结束。")
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("本机远程协助状态", style = MaterialTheme.typography.titleMedium)
+                            Text("远程点击（无障碍）：" +
+                                if (RemoteAssistGestureService.enabled()) "已开启" else "未开启")
+                            Text("屏幕共享：必须在每一次协助中由本人通过系统弹窗授权，" +
+                                "无法在设置页提前永久授权。")
+                            if (assistSession?.direction == RemoteAssistConsent.Direction.INCOMING)
+                                Text("本机画面状态：$assistTransferStatus",
+                                    style = MaterialTheme.typography.bodySmall)
+                            Text("当前会话：" + when (assistSession?.phase) {
+                                RemoteAssistConsent.Phase.WAITING_FOR_PERSON -> "收到申请，等待本人同意"
+                                RemoteAssistConsent.Phase.WAITING_FOR_REPLY -> "已发出申请，等待对方同意"
+                                RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
+                                    "已同意，等待被控制端授权屏幕共享"
+                                RemoteAssistConsent.Phase.ACTIVE -> "正在远程协助"
+                                null -> "没有正在进行的协助"
+                            })
+                            if (assistSession?.direction == RemoteAssistConsent.Direction.OUTGOING) {
+                                OutlinedButton(onClick = { showAssistControllerPanel = true }) {
+                                    Text("打开控制界面")
+                                }
+                            }
+                            if (assistSession != null) {
+                                OutlinedButton(onClick = { runTask("结束远程协助") {
+                                    manager.stopRemoteAssist()
+                                } }) { Text("立即结束当前协助") }
+                            }
+                        }
+                    }
+                    Text("老人开启远程点击权限的步骤", style = MaterialTheme.typography.titleMedium)
+                    Text("① 打开下面的系统无障碍设置。\n" +
+                        "② 在‘已下载的应用’或‘已安装的服务’中寻找" +
+                        "‘OpenKinGuard 远程协助（手动开启）’。\n" +
+                        "③ 点击该服务，打开开关并确认。\n" +
+                        "④ 返回应用，检查上方状态是否为‘已开启’。\n" +
+                        "⑤ 家人申请时再点击同意，并在系统弹窗中选择共享屏幕。")
+                    Button(onClick = {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }) { Text("打开系统无障碍设置") }
+                    Text("此服务不用于自动远程操控；没有正在进行的已授权屏幕共享会话时，" +
+                        "远程输入指令一律拒绝。")
+                    OutlinedButton(onClick = { navigateTo(0) }) {
+                        Text("返回求助页，查看已绑定家人")
+                    }
+                }
                 if (settingsSection == SettingsDestination.DAILY) {
                 Text("失联与低电量提醒", style = MaterialTheme.typography.titleMedium)
                 Text("失联提醒依据已绑定设备的签名心跳；不代表人员真正遇险。",
@@ -2376,6 +2553,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     Button(enabled = !relayJoinInProgress, onClick = {
                         relayJoinScanner.launch(ScanOptions()
                             .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                            .setCaptureActivity(PortraitQrCaptureActivity::class.java)
+                            .setOrientationLocked(true)
                             .setPrompt("扫描自己路由器上的 OpenKinGuard 加入二维码")
                             .setBeepEnabled(false))
                     }) { Text("扫描家庭节点二维码") }

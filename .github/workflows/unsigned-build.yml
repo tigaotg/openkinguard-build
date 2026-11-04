@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - 'app/**'
       - '.github/workflows/unsigned-build.yml'
 
 permissions:
@@ -31,26 +32,16 @@ jobs:
           sed -i 's/signingConfig = signingConfigs.getByName("isolatedPilotV4")/signingConfig = null/' app/build.gradle.kts
           chmod +x gradlew
           ./gradlew --no-daemon :app:assemblePilotV4 --stacktrace
-      - name: Package APK and signing tools
+      - name: Package APK and signing tool
         run: |
           mkdir -p build-out
           APK_FILE=$(find app/build/outputs/apk/pilotV4 -maxdepth 1 -name '*.apk' -type f -print -quit)
           test -n "$APK_FILE" || exit 1
-          cp "$APK_FILE" build-out/OpenKinGuard-0.9.17-PilotV4-unsigned.apk
+          cp "$APK_FILE" build-out/OpenKinGuard-0.9.18-PilotV4-unsigned.apk
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" build-out/
-          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" build-out/
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-0.9.17-unsigned-build
+          name: OpenKinGuard-0.9.18-unsigned-build
           path: build-out/*
           if-no-files-found: error
-          retention-days: 7
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenKinGuard-unsigned-build-logs
-          path: |
-            app/build/reports/**
-            app/build/test-results/**
-          if-no-files-found: ignore
           retention-days: 7
