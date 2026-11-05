@@ -46,8 +46,11 @@ internal object MedicalSchedule {
     }
 
     fun next(medicine: MedicalEntry, time: LocalTime, now: LocalDateTime): LocalDateTime? {
+        val start = runCatching { LocalDate.parse(medicine.value("start")) }.getOrNull()
+        val firstDay = if (start != null && start.isAfter(now.toLocalDate())) start
+            else now.toLocalDate()
         for (offset in 0..8) {
-            val date = now.toLocalDate().plusDays(offset.toLong())
+            val date = firstDay.plusDays(offset.toLong())
             val proposed = date.atTime(time)
             if (allowedOn(medicine, date) && proposed.isAfter(now)) return proposed
         }

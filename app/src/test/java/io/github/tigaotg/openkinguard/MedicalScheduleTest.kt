@@ -33,6 +33,14 @@ class MedicalScheduleTest {
             LocalDateTime.parse("2026-11-05T09:00")))
     }
 
+    @Test fun futureStartDateManyMonthsAwayStillSchedules() {
+        val future = medicine.copy(values = medicine.values +
+            mapOf("start" to "2027-03-01", "end" to "2027-12-31"))
+        assertEquals(LocalDateTime.parse("2027-03-01T08:00"),
+            MedicalSchedule.next(future, LocalTime.of(8, 0),
+                LocalDateTime.parse("2026-11-06T11:00")))
+    }
+
     @Test fun confirmationRemainsDistinctFromUnconfirmed() {
         val state = MedicalVault.emptyState().copy(entries = mapOf(
             MedicalKind.MEDICINE to listOf(medicine),
