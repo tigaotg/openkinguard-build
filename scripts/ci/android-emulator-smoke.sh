@@ -64,6 +64,8 @@ if (( api_level >= 33 )); then
 fi
 
 # 5. Restart the app process; do not delete app data.
+# Leave any OS-owned permission prompt before simulating a fresh user launch.
+adb shell input keyevent KEYCODE_HOME
 adb shell am force-stop "$package"
 start_app 'force-stop followed by explicit user launch'
 
