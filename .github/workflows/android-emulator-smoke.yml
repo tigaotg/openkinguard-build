@@ -96,20 +96,29 @@ jobs:
             -no-window -no-audio -no-boot-anim -no-snapshot \
             -gpu swiftshader_indirect -no-metrics > emulator-logs/emulator.txt 2>&1 &
           echo $! > emulator-logs/emulator.pid
-          timeout 600 bash -c '
-            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
+          if ! timeout 300 bash -c '
+            until [ "$(timeout 8 adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
+              if ! kill -0 "$(<emulator-logs/emulator.pid)" 2>/dev/null; then
+                echo "Emulator process exited before boot completed" >&2
+                exit 2
+              fi
               sleep 5
             done
-          '
+          '; then
+            echo 'Emulator boot failed; last emulator output:' >&2
+            tail -120 emulator-logs/emulator.txt >&2 || true
+            adb devices -l >&2 || true
+            exit 1
+          fi
           adb shell input keyevent 82
           bash scripts/ci/android-emulator-smoke.sh emulator-apk/*.apk "${{ matrix.api }}"
       - name: Collect logcat even if smoke checks fail
         if: always()
         run: |
           mkdir -p emulator-logs
-          adb logcat -d -v threadtime > emulator-logs/logcat.txt 2>&1 || true
-          adb shell dumpsys activity activities > emulator-logs/activities.txt 2>&1 || true
-          adb shell dumpsys package io.github.tigaotg.openkinguard.debug.pilotv4 > emulator-logs/package.txt 2>&1 || true
+          timeout 20 adb logcat -d -v threadtime > emulator-logs/logcat.txt 2>&1 || true
+          timeout 15 adb shell dumpsys activity activities > emulator-logs/activities.txt 2>&1 || true
+          timeout 15 adb shell dumpsys package io.github.tigaotg.openkinguard.debug.pilotv4 > emulator-logs/package.txt 2>&1 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
