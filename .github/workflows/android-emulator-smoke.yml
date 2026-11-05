@@ -76,8 +76,8 @@ jobs:
     name: Emulator ${{ matrix.name }} (API ${{ matrix.api }})
     env:
       # Both avdmanager and emulator must resolve the same writable AVD directory.
-      ANDROID_AVD_HOME: ${{ runner.temp }}/okg-android-avds
-      ANDROID_USER_HOME: ${{ runner.temp }}/okg-android-user
+      ANDROID_AVD_HOME: /tmp/okg-android-avds
+      ANDROID_USER_HOME: /tmp/okg-android-user
     steps:
       - uses: actions/checkout@v4
       - uses: android-actions/setup-android@v3
