@@ -153,11 +153,15 @@ return view.extend({
 					panel.appendChild(E('button', {
 						'class': 'btn cbi-button cbi-button-negative',
 						'click': function() {
-							var notice = '彻底删除此已取消设备在本路由器上的记录、昵称、备注及恢复资格。' +
-								'\\n以后如需加入，必须重新扫码并由管理员批准。此操作无法撤销。' +
-								'\\n设备公钥指纹：' + fp + '\\n\\n请输入“彻底删除”确认：';
-							if (window.prompt(notice, '') !== '彻底删除') return;
-							return joinAction('delete-device', fp).then(refreshAll).catch(showJoinError);
+							var notice = '确定彻底删除此已取消设备吗？\n' +
+								'该设备的路由器备注、登记记录及直接恢复资格将被删除，' +
+								'以后必须重新扫码并由管理员批准。\n' +
+								'设备指纹：' + fp;
+							if (!window.confirm(notice)) return;
+							return joinAction('delete-device', fp).then(function() {
+								ui.addNotification(null, E('p', {}, '已彻底删除该设备在路由器上的记录。'), 'info');
+								return refreshAll();
+							}).catch(showJoinError);
 						}
 					}, '彻底删除'));
 				}
