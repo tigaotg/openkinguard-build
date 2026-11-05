@@ -52,6 +52,7 @@ enum class SettingsDestination(val label: String, val summary: String) {
     MAP("地图打开方式", "Google 地图与国内地图分别跳转"),
     FIND("找回手机", "设备厂商的官方查找入口"),
     MEDICAL("病历文件", "仅在本机管理授权文件夹"),
+    RECORDS("记录", "原有求助、报平安、定位和操作历史"),
     HISTORY("求助与定位历史", "查看历史、调整保存时间"),
     CONTACTS("紧急联系人", "本机电话号码及手动呼叫"),
     WIDGETS("桌面小组件", "桌面快捷操作和状态"),
@@ -78,7 +79,7 @@ internal object SettingsMenuLayout {
             SettingsDestination.WEARABLE_ALERTS, SettingsDestination.WEARABLE_HISTORY,
             SettingsDestination.WEARABLE_TECH)),
         SettingsGroup("资料与隐私", "病历、位置、历史和联系人", listOf(
-            SettingsDestination.MEDICAL, SettingsDestination.HISTORY,
+            SettingsDestination.RECORDS, SettingsDestination.MEDICAL, SettingsDestination.HISTORY,
             SettingsDestination.CONTACTS, SettingsDestination.MAP)),
         SettingsGroup("界面与帮助", "桌面组件、外观、使用说明、诊断", listOf(
             SettingsDestination.WIDGETS, SettingsDestination.THEMES,

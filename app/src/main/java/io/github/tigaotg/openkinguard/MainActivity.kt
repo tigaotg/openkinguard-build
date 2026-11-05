@@ -17,11 +17,13 @@ import androidx.compose.ui.graphics.toArgb
 class MainActivity : ComponentActivity() {
     private var incomingWidgetAction by mutableStateOf<String?>(null)
     private var incomingRemoteInvite by mutableStateOf<String?>(null)
+    private var incomingMedicalReminder by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         incomingWidgetAction = widgetAction(intent)
         incomingRemoteInvite = remoteInvite(intent)
+        incomingMedicalReminder = intent?.action == MedicalReminders.ACTION_HEALTH
         setContent {
             val themes = remember { GuardThemeRepository(applicationContext) }
             val theme = themes.selected
@@ -39,7 +41,9 @@ class MainActivity : ComponentActivity() {
                 S1CompactSection(themes, incomingWidgetAction,
                     onWidgetActionConsumed = { incomingWidgetAction = null },
                     incomingRemoteInvite = incomingRemoteInvite,
-                    onRemoteInviteConsumed = { incomingRemoteInvite = null })
+                    onRemoteInviteConsumed = { incomingRemoteInvite = null },
+                    incomingMedicalReminder = incomingMedicalReminder,
+                    onMedicalReminderConsumed = { incomingMedicalReminder = false })
             }
         }
     }
@@ -49,6 +53,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         incomingWidgetAction = widgetAction(intent)
         incomingRemoteInvite = remoteInvite(intent)
+        incomingMedicalReminder = intent.action == MedicalReminders.ACTION_HEALTH
     }
 
     private fun widgetAction(intent: Intent?): String? = when (intent?.action) {

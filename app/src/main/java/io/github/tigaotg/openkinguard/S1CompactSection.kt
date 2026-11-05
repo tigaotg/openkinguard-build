@@ -73,7 +73,8 @@ import java.util.Date
 @Composable
 fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     onWidgetActionConsumed: () -> Unit = {}, incomingRemoteInvite: String? = null,
-    onRemoteInviteConsumed: () -> Unit = {}) {
+    onRemoteInviteConsumed: () -> Unit = {}, incomingMedicalReminder: Boolean = false,
+    onMedicalReminderConsumed: () -> Unit = {}) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val manager = remember { S1Runtime.manager(context.applicationContext) }
@@ -297,6 +298,13 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             page = 3
             settingsSectionName = SettingsDestination.HOME.name
         } else navigateTo(3)
+    }
+
+    LaunchedEffect(incomingMedicalReminder) {
+        if (incomingMedicalReminder) {
+            navigateTo(2)
+            onMedicalReminderConsumed()
+        }
     }
 
     BackHandler {
@@ -956,10 +964,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             NavigationBarItem(selected = page == 0, onClick = { navigateTo(0) },
                 icon = { Text("♥", fontSize = 22.sp) }, label = { Text("求助") }, colors = itemColors)
             NavigationBarItem(selected = page == 2, onClick = { navigateTo(2) },
-                icon = { Text("▤", fontSize = 22.sp) }, label = { Text("记录") }, colors = itemColors)
+                icon = { Text("✚", fontSize = 22.sp) }, label = { Text("健康档案") }, colors = itemColors)
             NavigationBarItem(selected = page == 5, onClick = { navigateTo(5) },
                 icon = { Text("◈", fontSize = 22.sp) }, label = { Text("穿戴") }, colors = itemColors)
-            NavigationBarItem(selected = page != 0 && page != 2 && page != 5, onClick = {
+            NavigationBarItem(selected = page == 3 || page == 4 || page == 1, onClick = {
                     navigateTo(3)
                 },
                 icon = { Text("⚙", fontSize = 22.sp) }, label = { Text("设置") }, colors = itemColors)
@@ -1081,7 +1089,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         Text("${peerName(latest.relationId, latest.fingerprint)} 已报平安 · " +
                             compactTime(latest.timestamp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { navigateTo(2) }) { Text("查看报平安") }
+                            Button(onClick = { navigateTo(4) }) { Text("查看报平安") }
                             TextButton(enabled = !busy, onClick = {
                                 runTask("确认已读") {
                                     manager.markIncomingCheckinsRead()
@@ -1147,7 +1155,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                     }
                     if (currentCases.size > 1) TextButton(onClick = {
-                        recordView = 0; navigateTo(2)
+                        recordView = 0; navigateTo(4)
                     }) { Text("查看其余 ${currentCases.size - 1} 条请求") }
                 }
             }
@@ -2147,6 +2155,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             }
 
             if (page == 2) {
+                MedicalHealthSection(pageScroll)
+            }
+
+            if (page == 4) {
                 Text("记录", style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -2387,6 +2399,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             if (expanded) group.destinations.forEach { target ->
                                 SettingsMenuEntry(target) {
                                     if (target == SettingsDestination.PAIRING) navigateTo(1)
+                                    else if (target == SettingsDestination.RECORDS) navigateTo(4)
                                     else settingsSectionName = target.name
                                 }
                             }
@@ -2399,6 +2412,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         SettingsMenuLayout.search(settingsFilter).forEach { target ->
                                 SettingsMenuEntry(target) {
                                     if (target == SettingsDestination.PAIRING) navigateTo(1)
+                                    else if (target == SettingsDestination.RECORDS) navigateTo(4)
                                     else settingsSectionName = target.name
                                 }
                         }
@@ -2443,7 +2457,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }
                     SettingsGuideLink("历史与操作记录",
                         "查看求助、报平安、定位记录和失败原因。") {
-                        navigateTo(2)
+                        navigateTo(4)
                     }
                     FeatureHelp("建议首次使用时先检查本机权限、连接家人的手机，" +
                         "再设置家庭中继，最后回到求助页测试。" +
