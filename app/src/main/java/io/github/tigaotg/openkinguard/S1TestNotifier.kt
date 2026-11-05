@@ -20,6 +20,7 @@ internal object S1TestNotifier {
     private const val LAN_LOST_CHANNEL_ID = "okg_s2_lan_lost_v1"
     private const val SAFETY_ZONE_CHANNEL_ID = "okg_s3_safety_zone_v1"
     private const val HEART_PILOT_CHANNEL_ID = "okg_s6_heart_pilot_local_v1"
+    private const val REMOTE_ASSIST_END_CHANNEL_ID = "okg_remote_assist_disconnect_v1"
 
     private fun baseStatus(context: Context): String {
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -100,6 +101,11 @@ internal object S1TestNotifier {
         send(context, text, HEART_PILOT_CHANNEL_ID, "本机心率阈值试验",
             NotificationManager.IMPORTANCE_HIGH, "heart-pilot-local")
 
+    /** Local-only warning. A network failure never triggers SOS or emergency calling. */
+    fun showRemoteAssistEnded(context: Context, text: String): String =
+        send(context, text, REMOTE_ASSIST_END_CHANNEL_ID, "远程协助连接中断",
+            NotificationManager.IMPORTANCE_HIGH, "remote-assist-disconnected")
+
     fun heartPilotNotificationStatus(context: Context): String {
         val base = baseStatus(context)
         if (!base.startsWith("通知权限正常")) return base
@@ -140,6 +146,7 @@ internal object S1TestNotifier {
                 LAN_LOST_CHANNEL_ID -> "OpenKinGuard · 局域网演练失联"
                 SAFETY_ZONE_CHANNEL_ID -> "OpenKinGuard · 安全区域演练"
                 HEART_PILOT_CHANNEL_ID -> "OpenKinGuard · 本机心率试验"
+                REMOTE_ASSIST_END_CHANNEL_ID -> "OpenKinGuard · 远程协助已断开"
                 else -> "OpenKinGuard · 报平安"
             })
             .setContentText(text)

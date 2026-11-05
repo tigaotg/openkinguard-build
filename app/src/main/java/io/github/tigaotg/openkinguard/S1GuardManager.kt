@@ -2,6 +2,7 @@ package io.github.tigaotg.openkinguard
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -75,6 +76,9 @@ class S1GuardManager(context: Context) {
     private val remoteAssistConsent = RemoteAssistConsent()
     @Volatile private var remoteRtc: RemoteAssistWebRtc? = null
     @Volatile private var remoteRtcSessionId = ""
+    @Volatile private var monitoredAssistSessionId = ""
+    private data class AssistExitNotice(val sessionId: String, val message: String)
+    @Volatile private var lastAssistExitNotice: AssistExitNotice? = null
     @Volatile private var pendingRemoteRenderer: org.webrtc.SurfaceViewRenderer? = null
     private val rtcSignalAssembler = RemoteAssistRtcSignalAssembler()
     @Volatile private var remotePeerDiagnosticSession = ""
@@ -186,6 +190,14 @@ class S1GuardManager(context: Context) {
     /** Session authorization is volatile and independent of all SOS/pairing state. */
     internal fun remoteAssistSession(): RemoteAssistConsent.Session? = remoteAssistConsent.snapshot()
 
+    internal fun remoteAssistExitMessage(sessionId: String? = null): String? =
+        lastAssistExitNotice?.takeIf { sessionId == null || it.sessionId == sessionId }?.message
+
+    internal fun dismissRemoteAssistExitMessage() {
+        lastAssistExitNotice = null
+        signal()
+    }
+
     internal fun remoteAssistRtcSize(): Pair<Int, Int>? = remoteRtc?.videoSize()
     internal fun remoteAssistRtcFresh(): Boolean = remoteRtc?.fresh() == true
 
@@ -251,7 +263,8 @@ class S1GuardManager(context: Context) {
             },
             sendSignal = { type, body -> sendRtcSignal(sessionId, type, body) },
             onFirstFrame = {
-                remoteAssistConsent.remotePreviewStarted(sessionId)
+                if (remoteAssistConsent.remotePreviewStarted(sessionId))
+                    startAssistLinkWatchdog(sessionId)
                 signal()
             },
             onCaptureRevoked = {
@@ -269,7 +282,56 @@ class S1GuardManager(context: Context) {
     }
 
     internal fun screenShareStarted(sessionId: String): Boolean =
-        remoteAssistConsent.screenStarted(sessionId).also { if (it) signal() }
+        remoteAssistConsent.screenStarted(sessionId).also {
+            if (it) {
+                startAssistLinkWatchdog(sessionId)
+                signal()
+            }
+        }
+
+    /** Poll only during a consented live session; local revocation always works offline. */
+    @Synchronized private fun startAssistLinkWatchdog(sessionId: String) {
+        if (monitoredAssistSessionId == sessionId) return
+        monitoredAssistSessionId = sessionId
+        Thread({
+            val policy = RemoteAssistLinkLossPolicy()
+            val connectivity = app.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager
+            while (remoteAssistConsent.snapshot()?.let {
+                    it.sessionId == sessionId && it.phase == RemoteAssistConsent.Phase.ACTIVE
+                } == true) {
+                val (connectedOnce, disconnected) =
+                    remoteRtc?.takeIf { remoteRtcSessionId == sessionId }
+                        ?.linkStatus() ?: (false to false)
+                // A local-only Wi-Fi connection may have no default route.
+                // An established, still-connected ICE path is stronger evidence.
+                val hasNetwork = runCatching { connectivity.activeNetwork != null }
+                    .getOrDefault(true) || (connectedOnce && !disconnected)
+                when (policy.observe(System.currentTimeMillis(), hasNetwork,
+                    connectedOnce, disconnected)) {
+                    RemoteAssistLinkLoss.LOCAL_NETWORK -> {
+                        endLostAssist(sessionId, "您已断网，远程协助已自动结束。请联网后重新申请。")
+                        break
+                    }
+                    RemoteAssistLinkLoss.REMOTE_PEER -> {
+                        endLostAssist(sessionId, "对方失去连接，远程协助已自动结束。请检查双方网络后重新申请。")
+                        break
+                    }
+                    null -> Unit
+                }
+                try { Thread.sleep(1_000) }
+                catch (_: InterruptedException) { break }
+            }
+            synchronized(this) {
+                if (monitoredAssistSessionId == sessionId) monitoredAssistSessionId = ""
+            }
+        }, "okg-remote-link-watchdog").apply { isDaemon = true; start() }
+    }
+
+    @Synchronized private fun endLostAssist(sessionId: String, reason: String) {
+        if (remoteAssistConsent.snapshot()?.sessionId != sessionId) return
+        stopRemoteAssist(reason)
+    }
 
     internal fun authorizedRemoteControl(sessionId: String): Boolean =
         remoteAssistConsent.snapshot()?.let { it.sessionId == sessionId &&
@@ -414,6 +476,7 @@ class S1GuardManager(context: Context) {
             it.relationId == relationId && it.role == PairingRole.HELPER
         } ?: throw IllegalArgumentException("只能向已绑定的被帮助者申请远程协助")
         val session = remoteAssistConsent.request(relationId, peer.peerFingerprint)
+        lastAssistExitNotice = null
         remotePeerDiagnosticSession = session.sessionId
         remotePeerDiagnostics = ""
         remotePeerDiagnosticAt = 0L
@@ -442,6 +505,7 @@ class S1GuardManager(context: Context) {
             it.role == PairingRole.SUBJECT }
             ?: throw IllegalArgumentException("家人关系已经撤销")
         remoteAssistConsent.localDecision(session.sessionId, approve)
+        if (approve) lastAssistExitNotice = null
         if (approve) RemoteAssistDiagnostics.begin("被控制端")
         return try {
             sendRemoteAssistControl(peer, if (approve) RemoteAssistWire.ACCEPT
@@ -456,9 +520,13 @@ class S1GuardManager(context: Context) {
         }
     }
 
-    fun stopRemoteAssist(): String {
+    @Synchronized fun stopRemoteAssist(disconnectReason: String? = null): String {
         val session = remoteAssistConsent.snapshot() ?: return "当前没有远程协助会话"
         remoteAssistConsent.clear() // Local revoke must not depend on network availability.
+        if (disconnectReason != null) {
+            lastAssistExitNotice = AssistExitNotice(session.sessionId, disconnectReason)
+            runCatching { S1TestNotifier.showRemoteAssistEnded(app, disconnectReason) }
+        }
         remotePeerDiagnostics = ""
         remotePeerDiagnosticSession = ""
         RemoteAssistDiagnostics.finish()
@@ -2362,6 +2430,7 @@ class S1GuardManager(context: Context) {
                 val previous = remoteAssistConsent.snapshot()
                 val accepted = remoteAssistConsent.receiveRequest(
                     peer.relationId, peer.peerFingerprint, body.sessionId)
+                if (accepted) lastAssistExitNotice = null
                 if (accepted && previous != null && previous.sessionId != body.sessionId) {
                     // An old projection must not survive a newly requested session.
                     closeRemoteRtc()
@@ -2377,6 +2446,8 @@ class S1GuardManager(context: Context) {
                 peer.peerFingerprint, body.sessionId, false)
             RemoteAssistWire.STOP -> if (remoteAssistConsent.stop(peer.relationId,
                     peer.peerFingerprint, body.sessionId)) {
+                lastAssistExitNotice = AssistExitNotice(body.sessionId,
+                    "对方已结束远程协助，屏幕共享和操作授权均已停止。")
                 closeRemoteRtc()
                 remoteStreamReplay.clear()
                 app.stopService(Intent(app, RemoteAssistProjectionService::class.java))

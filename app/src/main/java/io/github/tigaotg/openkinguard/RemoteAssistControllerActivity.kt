@@ -120,6 +120,7 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
     var toolbarVisible by remember { mutableStateOf(false) }
     var waitingSince by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var waitingSeconds by remember { mutableLongStateOf(0L) }
+    var disconnectWarning by remember { mutableStateOf<String?>(null) }
 
     fun command(label: String, perform: () -> String) {
         scope.launch {
@@ -137,6 +138,11 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
             val current = manager.remoteAssistSession()
             if (current?.sessionId != sessionId ||
                 current.direction != RemoteAssistConsent.Direction.OUTGOING) {
+                val notice = manager.remoteAssistExitMessage(sessionId)
+                if (notice != null) {
+                    disconnectWarning = notice
+                    delay(5_000) // Allow the user to read the reason, then exit the black screen.
+                }
                 onCollapse()
                 break
             }
@@ -148,6 +154,13 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
         }
     }
     BackHandler { onCollapse() }
+
+    disconnectWarning?.let { message ->
+        AlertDialog(onDismissRequest = onCollapse,
+            title = { Text("远程协助连接已结束") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = onCollapse) { Text("返回首页") } })
+    }
 
 
     // Video and system navigation occupy separate, non-overlapping rectangles.

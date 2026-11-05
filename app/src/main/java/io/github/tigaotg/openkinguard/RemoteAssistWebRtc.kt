@@ -47,6 +47,15 @@ internal class RemoteAssistWebRtc(
     private var renderer: SurfaceViewRenderer? = null
     private var desiredRenderer: SurfaceViewRenderer? = null
     private val pendingIce = ArrayList<IceCandidate>()
+    @Volatile private var lastIceState = PeerConnection.IceConnectionState.NEW
+    @Volatile private var iceConnectedOnce = false
+
+    /** Distinguish real post-connection loss from an initial slow ICE handshake. */
+    fun linkStatus(): Pair<Boolean, Boolean> = iceConnectedOnce to
+        (lastIceState == PeerConnection.IceConnectionState.DISCONNECTED ||
+            lastIceState == PeerConnection.IceConnectionState.FAILED ||
+            lastIceState == PeerConnection.IceConnectionState.CLOSED)
+
     private val remoteSink = VideoSink { frame ->
         if (closed.get()) return@VideoSink
         // A WebRTC frame can carry 90/270-degree rotation. The controller must
@@ -108,6 +117,10 @@ internal class RemoteAssistWebRtc(
                 override fun onSignalingChange(state: PeerConnection.SignalingState) {}
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                     if (!closed.get()) {
+                        lastIceState = state
+                        if (state == PeerConnection.IceConnectionState.CONNECTED ||
+                            state == PeerConnection.IceConnectionState.COMPLETED)
+                            iceConnectedOnce = true
                         RemoteAssistDiagnostics.connection("WebRTC ICE " + state.name)
                         notice("WebRTC ICE: " + state.name)
                     }

@@ -1115,6 +1115,20 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
             }
             if (page == 0) {
+                manager.remoteAssistExitMessage()?.let { message ->
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(message, modifier = Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium)
+                            TextButton(onClick = { manager.dismissRemoteAssistExitMessage() }) {
+                                Text("知道了")
+                            }
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically) {
                     Text("在线家人", style = MaterialTheme.typography.titleMedium,
@@ -1347,21 +1361,55 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                                         "● 查看我的位置：已授权，对方可在我打开应用时申请。"
                                                 }, modifier = Modifier.weight(1f),
                                                     style = MaterialTheme.typography.bodySmall)
-                                                if (!locationAllowed || !localGpsAllowed) {
-                                                    TextButton(enabled = !busy, onClick = {
-                                                        if (!localGpsAllowed) locationPermission.launch(arrayOf(
-                                                            Manifest.permission.ACCESS_COARSE_LOCATION,
-                                                            Manifest.permission.ACCESS_FINE_LOCATION))
-                                                        else pendingLocationAuthorization = subjectPeer
-                                                    }) { Text("获取权限") }
+                                                Column(horizontalAlignment = Alignment.End) {
+                                                    if (!locationAllowed || !localGpsAllowed)
+                                                        TextButton(enabled = !busy, onClick = {
+                                                            if (!localGpsAllowed) locationPermission.launch(arrayOf(
+                                                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                                                                Manifest.permission.ACCESS_FINE_LOCATION))
+                                                            else pendingLocationAuthorization = subjectPeer
+                                                        }) { Text("获取权限") }
+                                                    if (locationAllowed) TextButton(enabled = !busy,
+                                                        onClick = {
+                                                            runTask("撤销家人定位权限") {
+                                                                manager.allowLocationToHelper(subjectPeer.relationId, false)
+                                                                "已撤销这位家人查看我位置的授权"
+                                                            }
+                                                        }) { Text("撤销权限") }
                                                 }
                                             }
                                             if (locationPermissionFeedback.isNotBlank() && !localGpsAllowed)
                                                 InlineActionFeedback(locationPermissionFeedback)
                                             InlineActionFeedback(actionFeedback["授权家人查看位置"])
-                                            Text("● 远程协助：对方可以申请，但必须我逐次同意，且由 Android 授权共享屏幕。",
-                                                style = MaterialTheme.typography.bodySmall)
+                                            InlineActionFeedback(actionFeedback["撤销家人定位权限"])
+                                            val activeIncomingAssist = assistSession?.let {
+                                                it.relationId == subjectPeer.relationId &&
+                                                    it.direction == RemoteAssistConsent.Direction.INCOMING &&
+                                                    it.phase in setOf(
+                                                        RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
+                                                        RemoteAssistConsent.Phase.ACTIVE)
+                                            } == true
+                                            Row(verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text(if (activeIncomingAssist)
+                                                    "● 远程协助：这位家人已获得本次同意。"
+                                                    else "● 远程协助：每次都需要本人和安卓系统授权。",
+                                                    modifier = Modifier.weight(1f),
+                                                    style = MaterialTheme.typography.bodySmall)
+                                                if (activeIncomingAssist) TextButton(enabled = !busy,
+                                                    onClick = {
+                                                        runTask("撤销本次远程协助") {
+                                                            manager.stopRemoteAssist()
+                                                            "已撤销本次远程协助，屏幕共享已停止"
+                                                        }
+                                                    }) { Text("撤销本次授权") }
+                                            }
+                                            InlineActionFeedback(actionFeedback["撤销本次远程协助"])
                                         }
+                                        if (subjectPeer != null) TextButton(onClick = {
+                                            showPairingRelations = true
+                                            navigateTo(1)
+                                        }) { Text("管理此家人的更多权限") }
                                         if (helperPeer != null) Text(
                                             "我也可以帮助对方：申请定位或远程协助，仍需对方明确授权。",
                                             style = MaterialTheme.typography.bodySmall,

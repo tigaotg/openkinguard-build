@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 67
-        versionName = "0.9.32-home-action-permissions"
+        versionCode = 68
+        versionName = "0.9.33-revoke-and-disconnect"
     }
 
     buildTypes {
