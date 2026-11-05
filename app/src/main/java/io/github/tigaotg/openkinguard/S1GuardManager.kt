@@ -351,7 +351,7 @@ class S1GuardManager(context: Context) {
         val node = verified[peer.relationId]?.let { nodes[it] }
         val result = sendSignedFrame(peer, node, LanTestWire.encode(message),
             4500, allowRelay = RemoteAssistStreamWire.canUsePrivateRelay(kind))
-        if (result.usedRelay && kind == RemoteAssistStreamWire.RTC) {
+        if (result.viaRelay && kind == RemoteAssistStreamWire.RTC) {
             RemoteAssistDiagnostics.warning(
                 "RTC 信令已通过家庭私人中继传送；视频仍需 ICE 建立加密连接")
         }
