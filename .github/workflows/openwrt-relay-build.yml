@@ -32,11 +32,11 @@ jobs:
       - name: Create restorable OpenWrt source archives
         run: |
           mkdir -p dist
-          tar -czf dist/OpenKinGuard-family-relay-0.3.4-source.tar.gz openwrt-family-relay
-          zip -qr dist/OpenKinGuard-family-relay-0.3.4-source.zip openwrt-family-relay -x '*__pycache__*' '*.pyc'
+          tar -czf dist/OpenKinGuard-family-relay-0.3.5-source.tar.gz openwrt-family-relay
+          zip -qr dist/OpenKinGuard-family-relay-0.3.5-source.zip openwrt-family-relay -x '*__pycache__*' '*.pyc'
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-family-relay-0.3.4-source
+          name: OpenKinGuard-family-relay-0.3.5-source
           path: dist/*
           if-no-files-found: error
           retention-days: 30

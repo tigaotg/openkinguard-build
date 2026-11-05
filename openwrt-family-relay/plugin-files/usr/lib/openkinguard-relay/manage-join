@@ -2,7 +2,7 @@
 # Fixed-command entrypoint. Never interpolate caller input into shell commands.
 case "$1" in
     invite|list|firewall-status|open-ipv6|close-ipv6) [ "$#" -eq 1 ] || exit 2 ;;
-    approve|reject|revoke|restore) [ "$#" -eq 2 ] || exit 2 ;;
+    approve|reject|revoke|restore|delete-device) [ "$#" -eq 2 ] || exit 2 ;;
     set-note) [ "$#" -eq 3 ] || exit 2 ;;
     *) exit 2 ;;
 esac
