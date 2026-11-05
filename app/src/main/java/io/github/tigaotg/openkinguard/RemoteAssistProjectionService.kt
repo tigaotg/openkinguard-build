@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class RemoteAssistProjectionService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var videoEncoder: RemoteAssistVideoEncoder? = null
     private var reader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private val worker = Executors.newSingleThreadExecutor { r ->
@@ -104,6 +105,40 @@ class RemoteAssistProjectionService : Service() {
             val width = metrics.widthPixels.coerceAtLeast(100)
             val height = metrics.heightPixels.coerceAtLeast(100)
             val dpi = metrics.densityDpi
+            // 720 x 1280 portrait (or 1280 x 720 landscape), aligned for old H.264
+            // hardware. The app deliberately prefers stable 30 fps over a 60 fps spike.
+            val scale = minOf(1f, 720f / minOf(width, height),
+                1280f / maxOf(width, height))
+            val videoWidth = (((width * scale).toInt() / 16) * 16).coerceAtLeast(128)
+            val videoHeight = (((height * scale).toInt() / 16) * 16).coerceAtLeast(128)
+            var hardwareStarted = false
+            try {
+                if (manager.openRemoteAssistVideo(requestedId)) {
+                    val encoder = RemoteAssistVideoEncoder(videoWidth, videoHeight,
+                        send = { pts, flags, data ->
+                            manager.sendRemoteAssistVideoUnit(requestedId,
+                                videoWidth, videoHeight, pts, flags, data)
+                        }, report = { transferStatus = it })
+                    val surface = encoder.start()
+                    videoEncoder = encoder
+                    virtualDisplay = active.createVirtualDisplay("OpenKinGuard-AVC-720p",
+                        videoWidth, videoHeight, dpi,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        surface, null, Handler(mainLooper))
+                    hardwareStarted = true
+                    transferStatus = "局域网 H.264 720p / 30帧已启动"
+                }
+            } catch (failure: Exception) {
+                manager.closeRemoteAssistVideo()
+                videoEncoder?.close()
+                videoEncoder = null
+                runCatching { virtualDisplay?.release() }
+                virtualDisplay = null
+                transferStatus = "硬件视频初始化失败，使用兼容画面：${failure.javaClass.simpleName}"
+            }
+            if (!hardwareStarted) {
+            // Compatibility path for the existing P2P connection or a device
+            // that has no working hardware AVC encoder. Remains opt-in per session.
             captureThread = HandlerThread("okg-assist-screen").apply { start() }
             val handler = Handler(requireNotNull(captureThread).looper)
             reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
@@ -166,6 +201,7 @@ class RemoteAssistProjectionService : Service() {
             virtualDisplay = active.createVirtualDisplay("OpenKinGuard-assisted-screen",
                 width, height, dpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 requireNotNull(reader).surface, null, handler)
+            }
         } catch (error: Exception) {
             transferStatus = "屏幕捕获启动失败：${error.javaClass.simpleName}"
             requestStop()
@@ -191,6 +227,8 @@ class RemoteAssistProjectionService : Service() {
         if (!closing.get() && sessionId.isNotEmpty()) requestStop()
         closing.set(true)
         main.removeCallbacks(authorizationWatchdog)
+        S1Runtime.manager(applicationContext).closeRemoteAssistVideo()
+        videoEncoder?.close()
         reader?.setOnImageAvailableListener(null, null)
         runCatching { virtualDisplay?.release() }
         runCatching { reader?.close() }

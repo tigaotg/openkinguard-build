@@ -16,6 +16,8 @@ import android.media.projection.MediaProjectionManager
 import android.provider.Settings
 import android.provider.DocumentsContract
 import android.widget.Toast
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -38,6 +40,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -79,6 +82,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var snapshot by remember { mutableStateOf(manager.snapshot()) }
     var assistSession by remember { mutableStateOf(manager.remoteAssistSession()) }
     var assistPreview by remember { mutableStateOf(manager.remoteAssistPreview()) }
+    var assistVideoSize by remember { mutableStateOf(manager.remoteAssistVideoSize()) }
     var assistStartFeedback by remember { mutableStateOf("") }
     var assistTransferStatus by remember {
         mutableStateOf(RemoteAssistProjectionService.currentTransferStatus())
@@ -215,9 +219,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             val current = manager.remoteAssistSession()
             assistSession = current
             assistPreview = manager.remoteAssistPreview()
+            assistVideoSize = manager.remoteAssistVideoSize()
             assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             if (current == null) break
-            delay(1_000)
+            delay(if (current.direction == RemoteAssistConsent.Direction.OUTGOING) 180 else 500)
         }
     }
 
@@ -815,6 +820,40 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     Box(Modifier.fillMaxWidth().weight(1f),
                         contentAlignment = Alignment.Center) {
                         if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
+                            val videoSize = assistVideoSize
+                            if (videoSize != null && manager.remoteAssistVideoFresh()) {
+                                BoxWithConstraints(Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center) {
+                                    val ratio = videoSize.first.toFloat() / videoSize.second
+                                    val displayWidth = minOf(maxWidth, maxHeight * ratio)
+                                    val displayHeight = displayWidth / ratio
+                                    AndroidView(factory = { ctx ->
+                                        SurfaceView(ctx).apply {
+                                            holder.addCallback(object : SurfaceHolder.Callback {
+                                                override fun surfaceCreated(holder: SurfaceHolder) {
+                                                    manager.attachRemoteVideoSurface(holder.surface)
+                                                }
+                                                override fun surfaceChanged(holder: SurfaceHolder,
+                                                    format: Int, width: Int, height: Int) = Unit
+                                                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                                    manager.attachRemoteVideoSurface(null)
+                                                }
+                                            })
+                                        }
+                                    }, modifier = Modifier.width(displayWidth).height(displayHeight)
+                                        .pointerInput(session.sessionId) {
+                                            detectTapGestures { pos ->
+                                                runTask("远程点击") {
+                                                    manager.sendRemoteAssistTap(
+                                                        (pos.x / size.width * 10000).toInt()
+                                                            .coerceIn(0, 10000),
+                                                        (pos.y / size.height * 10000).toInt()
+                                                            .coerceIn(0, 10000))
+                                                }
+                                            }
+                                        })
+                                }
+                            } else {
                             val preview = assistPreview
                             val bitmap = remember(preview?.receivedAt) {
                                 preview?.let { BitmapFactory.decodeByteArray(it.jpeg, 0,
@@ -843,6 +882,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                 }
                             } else Text("等待第一帧画面。超过10秒请检查对方录屏授权及画面发送状态。",
                                 style = MaterialTheme.typography.bodySmall)
+                            }
                         } else Text("等待家人确认并开启屏幕共享…",
                             style = MaterialTheme.typography.bodyMedium)
                     }
