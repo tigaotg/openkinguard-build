@@ -95,12 +95,18 @@ internal object MedicalArchive {
             write("README.txt", ("OpenKinGuard 本地健康档案导出\n" +
                 "普通 ZIP 不加密。TXT/CSV/图片/PDF 可以由其他软件直接打开；请自行保管。\n" +
                 "manifest.json 含结构化数据和关联关系，适用于重新导入。\n").toByteArray(Charsets.UTF_8))
+            write("个人医疗信息.txt", MedicalFields.profile.joinToString("\n") { (key, label) ->
+                "$label：${state.profile[key].orEmpty()}"
+            }.toByteArray(Charsets.UTF_8))
             write("全部健康资料.txt", text(state).toByteArray(Charsets.UTF_8))
             MedicalKind.entries.forEach { kind ->
                 write("${kind.title}.txt", text(state, kind).toByteArray(Charsets.UTF_8))
             }
             write("服药记录.csv", csv(state).toByteArray(Charsets.UTF_8))
             write("紧急医疗信息.txt", state.emergency.toByteArray(Charsets.UTF_8))
+            write("本次情况.txt", MedicalFields.incident.joinToString("\n") { (key, label) ->
+                "$label：${state.incident[key].orEmpty()}"
+            }.toByteArray(Charsets.UTF_8))
             val filesJson = JSONArray()
             state.files.forEach { file ->
                 val ext = file.name.substringAfterLast('.', "bin")

@@ -29,8 +29,10 @@ internal object MedicalSchedule {
             runCatching { LocalTime.parse(candidate.trim()) }.getOrNull()
         }.distinct().sorted()
 
-    fun active(medicine: MedicalEntry): Boolean =
-        medicine.value("active").trim().lowercase() !in listOf("否", "false", "0", "已停止") &&
+    fun taking(medicine: MedicalEntry): Boolean =
+        medicine.value("active").trim().lowercase() !in listOf("否", "false", "0", "已停止")
+
+    fun active(medicine: MedicalEntry): Boolean = taking(medicine) &&
         medicine.value("paused").trim().lowercase() !in listOf("是", "true", "1", "暂停")
 
     fun allowedOn(medicine: MedicalEntry, date: LocalDate): Boolean {

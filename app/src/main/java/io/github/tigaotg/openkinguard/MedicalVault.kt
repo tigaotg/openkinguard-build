@@ -27,7 +27,7 @@ internal enum class MedicalKind(val key: String, val title: String, val fields: 
     CONDITION("conditions", "既往病史", listOf("name" to "疾病名称", "date" to "确诊日期", "active" to "是否正在治疗", "description" to "病情描述", "treatment" to "治疗经过", "notes" to "备注")),
     ADMISSION("admissions", "住院记录", listOf("hospital" to "医院名称", "department" to "科室", "start" to "入院日期", "end" to "出院日期", "reason" to "入院原因", "diagnosis" to "出院诊断", "treatment" to "治疗经过", "instructions" to "出院医嘱", "notes" to "备注")),
     SURGERY("surgeries", "手术记录", listOf("name" to "手术名称", "date" to "手术日期", "hospital" to "医院名称", "condition" to "相关疾病", "admissionId" to "关联住院记录编号（选填）", "description" to "手术说明", "instructions" to "术后注意事项", "notes" to "备注")),
-    MEDICINE("medicines", "我的药物", listOf("name" to "药品名称", "purpose" to "用途", "dose" to "每次服用剂量", "unit" to "剂量单位", "times" to "服药时间（08:00,20:00）", "weekdays" to "每周服药日（1-7，留空为每天）", "start" to "开始日期", "end" to "结束日期", "active" to "正在服用（是/否）", "paused" to "暂停提醒（是/否）", "cautions" to "服药注意事项", "instructions" to "医生医嘱", "notes" to "备注")),
+    MEDICINE("medicines", "我的药物", listOf("name" to "药品名称", "purpose" to "用途", "dose" to "每次服用剂量", "unit" to "剂量单位", "frequency" to "每日服药次数", "times" to "服药时间（08:00,20:00）", "weekdays" to "每周服药日（1-7，留空为每天）", "start" to "开始日期", "end" to "结束日期", "active" to "正在服用（是/否）", "paused" to "暂停提醒（是/否）", "cautions" to "服药注意事项", "instructions" to "医生医嘱", "notes" to "备注")),
     DOSE("doses", "服药记录", listOf("medicineId" to "药品编号", "medicineName" to "药品名称", "planned" to "计划服药时间", "actual" to "实际确认时间", "dose" to "服用剂量", "status" to "状态", "notes" to "备注"))
 }
 

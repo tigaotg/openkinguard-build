@@ -68,6 +68,7 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
     var feedback by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<MedicalEntry?>(null) }
+    var showPastMedicines by remember { mutableStateOf(false) }
     var deleteAttachment by remember { mutableStateOf<MedicalFile?>(null) }
     var renameAttachment by remember { mutableStateOf<MedicalFile?>(null) }
     var renameDraft by remember { mutableStateOf("") }
@@ -353,8 +354,18 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
         }
         "list" -> {
             Button(onClick = { openEditor(null) }) { Text("新增${kind.title}") }
-            if (state.records(kind).isEmpty()) Text("暂无记录，点击上方按钮添加")
-            state.records(kind).sortedByDescending { it.updatedAt }.forEach { entry ->
+            if (kind == MedicalKind.MEDICINE) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showPastMedicines = false }) {
+                    Text(if (showPastMedicines) "当前药物" else "● 当前药物") }
+                OutlinedButton(onClick = { showPastMedicines = true }) {
+                    Text(if (showPastMedicines) "● 历史药物" else "历史药物") }
+            }
+            val shown = state.records(kind).filter { entry ->
+                kind != MedicalKind.MEDICINE ||
+                    (MedicalSchedule.taking(entry) != showPastMedicines)
+            }.sortedByDescending { it.updatedAt }
+            if (shown.isEmpty()) Text("暂无记录，点击上方按钮添加")
+            shown.forEach { entry ->
                 OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(entry.value(kind.fields.first().first).ifBlank { "未命名记录" },
