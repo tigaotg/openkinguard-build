@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 56
-        versionName = "0.9.21-low-latency-720p-avc"
+        versionCode = 57
+        versionName = "0.9.22-remote-assist-diagnostics"
     }
 
     buildTypes {

@@ -88,6 +88,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         mutableStateOf(RemoteAssistProjectionService.currentTransferStatus())
     }
     var showAssistControllerPanel by remember { mutableStateOf(false) }
+    var showAssistDiagnostics by remember { mutableStateOf(false) }
+    var assistDiagnosticText by remember { mutableStateOf("") }
+    var diagnosticAutomaticallyShownSession by remember { mutableStateOf("") }
     val sharePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()) { result ->
         val permission = result.data
@@ -211,6 +214,21 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     LaunchedEffect(assistSession?.sessionId, assistSession?.phase) {
         showAssistControllerPanel =
             assistSession?.direction == RemoteAssistConsent.Direction.OUTGOING
+    }
+    // A one-time diagnostic after enough samples have accumulated, not an alert
+    // that repeats on every 180 ms UI refresh.
+    LaunchedEffect(assistSession?.sessionId, assistSession?.phase) {
+        val active = assistSession?.takeIf {
+            it.direction == RemoteAssistConsent.Direction.OUTGOING &&
+                it.phase == RemoteAssistConsent.Phase.ACTIVE
+        } ?: return@LaunchedEffect
+        if (diagnosticAutomaticallyShownSession == active.sessionId) return@LaunchedEffect
+        delay(14_000)
+        if (manager.remoteAssistSession()?.sessionId == active.sessionId) {
+            diagnosticAutomaticallyShownSession = active.sessionId
+            assistDiagnosticText = manager.remoteAssistDiagnosticReport()
+            showAssistDiagnostics = true
+        }
     }
     // One lightweight in-memory refresh per second while assisting; never poll
     // the encrypted SOS/history snapshot for every JPEG frame on older phones.
@@ -801,6 +819,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         Text("远程协助 · ${peerName(session.relationId, session.peerFingerprint)}",
                             modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.titleMedium)
+                        TextButton(onClick = {
+                            assistDiagnosticText = manager.remoteAssistDiagnosticReport()
+                            showAssistDiagnostics = true
+                        }) { Text("诊断") }
                         TextButton(onClick = { showAssistControllerPanel = false }) {
                             Text("收起")
                         }
@@ -926,6 +948,37 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
             }
         }
+    }
+
+    if (showAssistDiagnostics) {
+        AlertDialog(onDismissRequest = { showAssistDiagnostics = false },
+            title = { Text("远程画面卡顿诊断") },
+            text = {
+                Column(Modifier.fillMaxWidth().heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())) {
+                    Text("这是实际采样数据，不是设置中的目标帧率。保持共享约15秒后刷新并复制。",
+                        style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(assistDiagnosticText,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText(
+                        "OpenKinGuard 远程卡顿诊断", assistDiagnosticText))
+                    Toast.makeText(context, "诊断信息已复制，可粘贴发给我分析",
+                        Toast.LENGTH_LONG).show()
+                }) { Text("复制全部信息") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    assistDiagnosticText = manager.remoteAssistDiagnosticReport()
+                }) { Text("刷新数据") }
+                TextButton(onClick = { showAssistDiagnostics = false }) { Text("关闭") }
+            })
     }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background, bottomBar = {

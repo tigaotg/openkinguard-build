@@ -50,4 +50,22 @@ class RemoteAssistStreamWireTest {
         assertTrue(runCatching { RemoteAssistStreamWire.frame(relation, session, frameId,
             0, 1, 400, 600, ByteArray(4000)) }.isFailure)
     }
+
+    @Test fun `diagnostics are utf8 signed session scoped and strictly capped`() {
+        val report = "编码=H264; 帧率=12.4; 状态=等待关键帧"
+        val body = RemoteAssistStreamWire.decode(signed(RemoteAssistStreamWire.DIAGNOSTIC,
+            RemoteAssistStreamWire.diagnostic(relation, session, report)))
+        assertEquals(report, body.diagnosticText)
+        assertTrue(runCatching { RemoteAssistStreamWire.decode(signed(
+            RemoteAssistStreamWire.DIAGNOSTIC,
+            RemoteAssistStreamWire.diagnostic(relation, session, report),
+            UUID.randomUUID().toString())) }.isFailure)
+        assertTrue(runCatching { RemoteAssistStreamWire.diagnostic(relation, session,
+            "x".repeat(1101)) }.isFailure)
+        assertTrue(runCatching { RemoteAssistStreamWire.decode(signed(
+            RemoteAssistStreamWire.DIAGNOSTIC,
+            RemoteAssistStreamWire.diagnostic(relation, session, report).also {
+                it[it.lastIndex] = '*'.code.toByte()
+            })) }.isFailure)
+    }
 }

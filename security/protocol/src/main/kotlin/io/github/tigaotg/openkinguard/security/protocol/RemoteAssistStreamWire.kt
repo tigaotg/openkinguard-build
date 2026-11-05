@@ -15,8 +15,9 @@ object RemoteAssistStreamWire {
     const val SWIPE = "OKG_REMOTE_SWIPE_V1"
     const val BACK = "OKG_REMOTE_BACK_V1"
     const val HOME = "OKG_REMOTE_HOME_V1"
+    const val DIAGNOSTIC = "OKG_REMOTE_DIAG_V1"
     const val ACK = "OKG_REMOTE_STREAM_ACK_V1"
-    val requestKinds = setOf(FRAME, TAP, SWIPE, BACK, HOME)
+    val requestKinds = setOf(FRAME, TAP, SWIPE, BACK, HOME, DIAGNOSTIC)
     val kinds = requestKinds + ACK
 
     data class Packet(
@@ -34,6 +35,7 @@ object RemoteAssistStreamWire {
         val y2: Int = 0,
         val durationMs: Int = 0,
         val respondsTo: String? = null,
+        val diagnosticText: String = "",
     )
 
     fun frame(relationId: String, sessionId: String, frameId: String,
@@ -70,6 +72,15 @@ object RemoteAssistStreamWire {
         "A|${uuid(relationId)}|${uuid(sessionId)}|${uuid(respondsTo)}"
             .toByteArray(Charsets.US_ASCII)
 
+    /** Encrypted-by-transport authenticated metadata, never screen pixels or device secrets. */
+    fun diagnostic(relationId: String, sessionId: String, content: String): ByteArray {
+        val utf8 = content.toByteArray(Charsets.UTF_8)
+        require(utf8.size in 1..1100) { "Diagnostic must be 1..1100 bytes" }
+        val data = Base64.getUrlEncoder().withoutPadding().encodeToString(utf8)
+        return "D|${uuid(relationId)}|${uuid(sessionId)}|$data"
+            .toByteArray(Charsets.US_ASCII)
+    }
+
     fun decode(message: MessageEnvelope): Packet {
         require(message.payloadKind in kinds) { "Unknown assistance packet" }
         require(message.payload.size in 75..4300 &&
@@ -77,7 +88,7 @@ object RemoteAssistStreamWire {
         val parts = message.payload.toString(Charsets.US_ASCII).split('|')
         val expected = when (message.payloadKind) {
             FRAME -> "F"; TAP -> "T"; SWIPE -> "W";
-            BACK -> "B"; HOME -> "H"; else -> "A"
+            BACK -> "B"; HOME -> "H"; DIAGNOSTIC -> "D"; else -> "A"
         }
         require(parts.firstOrNull() == expected) { "Assistance packet kind mismatch" }
         require(parts.size == when (message.payloadKind) {
@@ -107,6 +118,13 @@ object RemoteAssistStreamWire {
                     x2 = coordinates[2], y2 = coordinates[3], durationMs = duration)
             }
             ACK -> Packet(relation, session, respondsTo = uuid(parts[3]))
+            DIAGNOSTIC -> {
+                val data = Base64.getUrlDecoder().decode(parts[3])
+                require(data.size in 1..1100)
+                val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(data))
+                    .toString()
+                Packet(relation, session, diagnosticText = text)
+            }
             else -> Packet(relation, session)
         }
     }

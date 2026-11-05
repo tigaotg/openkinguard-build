@@ -11,6 +11,10 @@ internal class RemoteAssistFrames(private val clock: () -> Long = System::curren
         val height: Int, val parts: Array<ByteArray?>)
     private var pending: Pending? = null
     private var latest: Preview? = null
+    private val completed = RemoteAssistTrafficMeter()
+
+    @Synchronized fun diagnostics(): String = "JPEG完整画面: ${completed.summary()}\n" +
+        "最后尺寸: ${latest?.let { "${it.width}x${it.height}" } ?: "尚未收到"}"
 
     @Synchronized fun accept(packet: RemoteAssistStreamWire.Packet): Boolean {
         val id = packet.frameId ?: return false
@@ -33,6 +37,7 @@ internal class RemoteAssistFrames(private val clock: () -> Long = System::curren
         if (data.size !in 100..80_000 || data[0] != 0xff.toByte() ||
             data[1] != 0xd8.toByte()) return false
         latest = Preview(data, current.width, current.height, now)
+        completed.record(data.size)
         return true
     }
 
@@ -40,5 +45,8 @@ internal class RemoteAssistFrames(private val clock: () -> Long = System::curren
         clock() - it.receivedAt in 0..20_000L
     }
 
-    @Synchronized fun clear() { latest = null; pending = null }
+    @Synchronized fun clear() {
+        latest = null; pending = null
+        completed.reset()
+    }
 }
