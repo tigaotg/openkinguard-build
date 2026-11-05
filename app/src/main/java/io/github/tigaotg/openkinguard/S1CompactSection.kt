@@ -584,7 +584,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     liveLocationRelation = null
                     healthMonitor.close()
                     S1Runtime.detachUi()
-                    if (!S1Runtime.isBackgroundListening()) GuardWidgetPublisher.markInactive(context)
+                    if (!S1Runtime.isBackgroundListening() && !S1Runtime.isUiVisible())
+                        GuardWidgetPublisher.markInactive(context)
                 }
                 else -> Unit
             }
@@ -600,7 +601,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             lifecycleOwner.lifecycle.removeObserver(observer)
             healthMonitor.close()
             S1Runtime.detachUi()
-            if (!S1Runtime.isBackgroundListening()) GuardWidgetPublisher.markInactive(context)
+            if (!S1Runtime.isBackgroundListening() && !S1Runtime.isUiVisible())
+                        GuardWidgetPublisher.markInactive(context)
         }
     }
     LaunchedEffect(manager) {

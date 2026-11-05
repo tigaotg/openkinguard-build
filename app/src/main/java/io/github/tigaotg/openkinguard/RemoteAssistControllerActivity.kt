@@ -38,6 +38,8 @@ import org.webrtc.SurfaceViewRenderer
  * whole approved session. Floating overlays NEVER resize or recreate video.
  */
 class RemoteAssistControllerActivity : ComponentActivity() {
+    private var ownsTransport = false
+
     companion object {
         const val EXTRA_SESSION_ID = "io.github.tigaotg.openkinguard.CONTROL_SESSION"
     }
@@ -58,6 +60,29 @@ class RemoteAssistControllerActivity : ComponentActivity() {
                 ControllerScreen(sessionId, onCollapse = { finish() })
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // MainActivity becomes STOPPED after this fullscreen Activity starts.
+        // Explicitly take over its LAN/P2P listener before that transition.
+        runCatching {
+            S1Runtime.attachController(applicationContext)
+            ownsTransport = true
+        }.onFailure { failure ->
+            Toast.makeText(this,
+                "远程协助通信启动失败：" + failure.javaClass.simpleName,
+                Toast.LENGTH_LONG).show()
+            finish()
+        }
+    }
+
+    override fun onStop() {
+        if (ownsTransport) {
+            ownsTransport = false
+            S1Runtime.detachController()
+        }
+        super.onStop()
     }
 
     override fun onResume() {

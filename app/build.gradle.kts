@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 61
-        versionName = "0.9.26-immersive-remote-controls"
+        versionCode = 62
+        versionName = "0.9.27-controller-session-lifecycle"
     }
 
     buildTypes {

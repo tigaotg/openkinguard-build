@@ -10,6 +10,9 @@ internal object S1Runtime {
     // when the person opens another app. This flag is never persisted.
     @Volatile private var assistForegroundListening = false
     @Volatile private var visible = false
+    // A dedicated controller Activity is also foreground UI. Without this
+    // lease, MainActivity.ON_STOP revokes its own in-progress assist session.
+    @Volatile private var controllerVisible = false
     private var uiOnChange: (() -> Unit)? = null
     // The manager stores only context.applicationContext; no Activity/Window is retained.
     @SuppressLint("StaticFieldLeak")
@@ -27,8 +30,27 @@ internal object S1Runtime {
     @Synchronized fun detachUi() {
         visible = false
         uiOnChange = null
-        if (!backgroundListening && !assistForegroundListening) managerInstance?.stop()
+        if (shouldStopTransport()) managerInstance?.stop()
     }
+
+    @Synchronized fun attachController(context: Context) {
+        controllerVisible = true
+        try {
+            manager(context).start { uiOnChange?.invoke() }
+        } catch (error: Exception) {
+            controllerVisible = false
+            throw error
+        }
+    }
+
+    @Synchronized fun detachController() {
+        controllerVisible = false
+        if (shouldStopTransport()) managerInstance?.stop()
+    }
+
+    private fun shouldStopTransport(): Boolean =
+        S1RuntimeLifecyclePolicy.shouldStop(visible, controllerVisible,
+            backgroundListening, assistForegroundListening)
 
     @Synchronized fun attachService(context: Context) {
         manager(context).start { uiOnChange?.invoke() }
@@ -37,7 +59,7 @@ internal object S1Runtime {
 
     @Synchronized fun detachService() {
         backgroundListening = false
-        if (!visible && !assistForegroundListening) managerInstance?.stop()
+        if (shouldStopTransport()) managerInstance?.stop()
     }
 
     @Synchronized fun attachAssistForeground(context: Context) {
@@ -52,9 +74,9 @@ internal object S1Runtime {
 
     @Synchronized fun detachAssistForeground() {
         assistForegroundListening = false
-        if (!visible && !backgroundListening) managerInstance?.stop()
+        if (shouldStopTransport()) managerInstance?.stop()
     }
 
     fun isBackgroundListening(): Boolean = backgroundListening
-    fun isUiVisible(): Boolean = visible
+    fun isUiVisible(): Boolean = visible || controllerVisible
 }
