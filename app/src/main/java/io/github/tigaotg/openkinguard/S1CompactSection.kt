@@ -90,8 +90,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var showAssistControllerPanel by remember { mutableStateOf(false) }
     var showAssistDiagnostics by remember { mutableStateOf(false) }
     var assistDiagnosticsText by remember { mutableStateOf("") }
-    var showAssistDiagnostics by remember { mutableStateOf(false) }
-    var assistDiagnosticText by remember { mutableStateOf("") }
     var diagnosticAutomaticallyShownSession by remember { mutableStateOf("") }
     val sharePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()) { result ->
@@ -228,7 +226,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         delay(14_000)
         if (manager.remoteAssistSession()?.sessionId == active.sessionId) {
             diagnosticAutomaticallyShownSession = active.sessionId
-            assistDiagnosticText = manager.remoteAssistDiagnosticReport()
+            assistDiagnosticsText = RemoteAssistDiagnostics.report()
             showAssistDiagnostics = true
         }
     }
@@ -823,10 +821,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.titleMedium)
                         TextButton(onClick = {
-                            assistDiagnosticText = manager.remoteAssistDiagnosticReport()
-                            showAssistDiagnostics = true
-                        }) { Text("诊断") }
-                        TextButton(onClick = {
                             assistDiagnosticsText = RemoteAssistDiagnostics.report()
                             showAssistDiagnostics = true
                         }) { Text("诊断") }
@@ -955,37 +949,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
             }
         }
-    }
-
-    if (showAssistDiagnostics) {
-        AlertDialog(onDismissRequest = { showAssistDiagnostics = false },
-            title = { Text("远程画面卡顿诊断") },
-            text = {
-                Column(Modifier.fillMaxWidth().heightIn(max = 440.dp)
-                    .verticalScroll(rememberScrollState())) {
-                    Text("这是实际采样数据，不是设置中的目标帧率。保持共享约15秒后刷新并复制。",
-                        style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
-                    Text(assistDiagnosticText,
-                        style = MaterialTheme.typography.bodySmall)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                        as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText(
-                        "OpenKinGuard 远程卡顿诊断", assistDiagnosticText))
-                    Toast.makeText(context, "诊断信息已复制，可粘贴发给我分析",
-                        Toast.LENGTH_LONG).show()
-                }) { Text("复制全部信息") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    assistDiagnosticText = manager.remoteAssistDiagnosticReport()
-                }) { Text("刷新数据") }
-                TextButton(onClick = { showAssistDiagnostics = false }) { Text("关闭") }
-            })
     }
 
     if (showAssistDiagnostics) {
