@@ -148,6 +148,7 @@ class MedicalReminderReceiver : BroadcastReceiver() {
                     .firstOrNull { it.id == id } ?: return
                 val time = intent.getStringExtra("time").orEmpty()
                 if (!MedicalSchedule.active(medicine)) return
+                if (time != "snooze" && !MedicalSchedule.allowedOn(medicine, LocalDate.now())) return
                 if (time != "snooze" && MedicalSchedule.slots(medicine).none {
                         it.toString() == time }) return
                 MedicalReminders.show(context, medicine)

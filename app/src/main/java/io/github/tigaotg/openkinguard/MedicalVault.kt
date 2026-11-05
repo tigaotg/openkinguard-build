@@ -37,7 +37,8 @@ internal data class MedicalEntry(val id: String, val values: Map<String, String>
 }
 
 internal data class MedicalFile(val id: String, val name: String, val mime: String,
-    val hash: String, val relatedKind: String, val relatedId: String, val size: Int)
+    val hash: String, val relatedKind: String, val relatedId: String, val size: Int,
+    val note: String = "")
 
 internal data class MedicalState(val profile: Map<String, String>, val emergency: String,
     val incident: Map<String, String>, val entries: Map<MedicalKind, List<MedicalEntry>>,
@@ -60,7 +61,7 @@ internal class MedicalVault(private val context: Context) {
     private val directory = File(context.filesDir, "medical_vault_v1").apply { mkdirs() }
     private val content = AtomicFile(File(directory, "medical.enc"))
     private val fileDirectory = File(directory, "attachments").apply { mkdirs() }
-    private val key: SecretKey by lazy { getKey() }
+    private val key: SecretKey by lazy { loadAesKey() }
     private val maxFile = 16 * 1024 * 1024
 
     @Synchronized fun snapshot(): MedicalState = decode(load())
@@ -136,12 +137,13 @@ internal class MedicalVault(private val context: Context) {
         File(fileDirectory, "$id.enc").delete()
     }
 
-    @Synchronized fun renameFile(id: String, title: String) = mutate { root ->
+    @Synchronized fun updateFileInfo(id: String, title: String, note: String) = mutate { root ->
         require(title.isNotBlank()) { "附件标题不能为空" }
         val list = root.getJSONArray("files")
         val file = (0 until list.length()).map { list.getJSONObject(it) }
             .firstOrNull { it.optString("id") == id } ?: error("附件不存在")
         file.put("name", title.trim().take(120))
+        file.put("note", note.take(2000))
     }
 
     @Synchronized fun linkFile(kind: MedicalKind, recordId: String, fileId: String) {
@@ -160,6 +162,7 @@ internal class MedicalVault(private val context: Context) {
     @Synchronized fun replaceForRestore(state: MedicalState, files: Map<String, ByteArray>) {
         // Validate and encrypt all new files before replacing the state. Existing files are retained.
         state.files.forEach { file ->
+            require(safeId(file.id)) { "附件编号不合法" }
             val bytes = files[file.id] ?: error("备份中缺少附件：${file.name}")
             require(sha(bytes) == file.hash && bytes.size <= maxFile) { "附件校验失败" }
         }
@@ -192,7 +195,7 @@ internal class MedicalVault(private val context: Context) {
         catch (error: Exception) { content.failWrite(output); throw error }
     }
 
-    private fun getKey(): SecretKey {
+    private fun loadAesKey(): SecretKey {
         val alias = "openkinguard_medical_vault_aes_v1"
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
@@ -218,6 +221,7 @@ internal class MedicalVault(private val context: Context) {
 
     companion object {
         fun freshId(): String = UUID.randomUUID().toString()
+        fun safeId(id: String): Boolean = id.matches(Regex("[a-zA-Z0-9_-]{1,80}"))
         fun sha(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
             .joinToString("") { "%02x".format(it) }
         fun limitedRead(input: java.io.InputStream, max: Int): ByteArray {
@@ -272,10 +276,10 @@ internal class MedicalVault(private val context: Context) {
         fun fileJson(file: MedicalFile) = JSONObject().apply {
             put("id", file.id); put("name", file.name); put("mime", file.mime)
             put("hash", file.hash); put("relatedKind", file.relatedKind)
-            put("relatedId", file.relatedId); put("size", file.size)
+            put("relatedId", file.relatedId); put("size", file.size); put("note", file.note)
         }
         fun fileFromJson(j: JSONObject) = MedicalFile(j.getString("id"), j.getString("name"),
             j.optString("mime"), j.getString("hash"), j.optString("relatedKind"),
-            j.optString("relatedId"), j.optInt("size"))
+            j.optString("relatedId"), j.optInt("size"), j.optString("note"))
     }
 }

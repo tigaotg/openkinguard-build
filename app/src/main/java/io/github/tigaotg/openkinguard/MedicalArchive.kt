@@ -139,6 +139,10 @@ internal object MedicalArchive {
         val root = JSONObject(manifest.toString(Charsets.UTF_8))
         require(root.optInt("formatVersion") == 1) { "不兼容的健康档案版本" }
         val state = MedicalVault.decode(root)
+        require(state.files.size <= 300 && MedicalKind.entries.all { kind ->
+            state.records(kind).size <= 5_000 && state.records(kind).all { MedicalVault.safeId(it.id) }
+        }) { "健康档案记录过多或编号不合法" }
+        require(state.files.all { MedicalVault.safeId(it.id) }) { "附件编号不安全" }
         val declaredFiles = root.optJSONArray("files") ?: JSONArray()
         val blobs = mutableMapOf<String, ByteArray>()
         for (i in 0 until declaredFiles.length()) {
@@ -168,6 +172,9 @@ internal object MedicalArchive {
             require(root.optInt("formatVersion") == 1) { "结构化 TXT 版本不兼容" }
             val state = MedicalVault.decode(root)
             require(state.files.isEmpty()) { "TXT 不允许包含文件附件数据" }
+            require(MedicalKind.entries.all { kind ->
+                state.records(kind).size <= 5_000 && state.records(kind).all { MedicalVault.safeId(it.id) }
+            }) { "记录数量或编号不合法" }
             return MedicalImport(state, emptyMap())
         }
         val kind = MedicalKind.entries.firstOrNull { it.key == first.removePrefix(marker).trim() }
@@ -176,6 +183,7 @@ internal object MedicalArchive {
             .map { MedicalVault.recordFromJson(JSONObject(it.removePrefix("# OKG_RECORD_JSON "))) }
             .toList()
         require(records.size <= 5000) { "记录数量超出限制" }
+        require(records.all { MedicalVault.safeId(it.id) }) { "记录编号不合法" }
         return MedicalImport(MedicalVault.emptyState().copy(entries =
             MedicalKind.entries.associateWith { if (it == kind) records else emptyList() }), emptyMap())
     }

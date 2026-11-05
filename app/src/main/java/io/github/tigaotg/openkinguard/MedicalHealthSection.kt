@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.LocalDateTime
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 /** Local-only UI. No manager, pairing or network instance is referenced. */
@@ -62,6 +63,7 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
     var editing by remember { mutableStateOf<MedicalEntry?>(null) }
     val fields = remember { mutableStateMapOf<String, String>() }
     var emergencyText by remember { mutableStateOf(state.emergency) }
+    var largeEmergency by remember { mutableStateOf(false) }
     val incident = remember { mutableStateMapOf<String, String>().apply { putAll(state.incident) } }
     var feedback by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
@@ -69,6 +71,7 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
     var deleteAttachment by remember { mutableStateOf<MedicalFile?>(null) }
     var renameAttachment by remember { mutableStateOf<MedicalFile?>(null) }
     var renameDraft by remember { mutableStateOf("") }
+    var attachmentNote by remember { mutableStateOf("") }
     var attachmentTarget by remember { mutableStateOf<Pair<MedicalKind, String>?>(null) }
     var cameraPhoto by remember { mutableStateOf<Uri?>(null) }
     var cameraPath by remember { mutableStateOf<File?>(null) }
@@ -282,9 +285,14 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
         }
         "emergency" -> {
             Text("长期病史与本次发生的情况分开填写。保存后可离线显示、复制或导出 TXT。")
-            OutlinedTextField(value = emergencyText, onValueChange = { emergencyText = it.take(30_000) },
-                label = { Text("给医生看的长期医疗说明") }, modifier = Modifier.fillMaxWidth(),
-                minLines = 6)
+            OutlinedButton(onClick = { largeEmergency = !largeEmergency }) {
+                Text(if (largeEmergency) "返回编辑" else "大字展示给医生")
+            }
+            if (largeEmergency) Text(emergencyText.ifBlank { "尚未填写紧急医疗信息" },
+                style = MaterialTheme.typography.headlineSmall)
+            else OutlinedTextField(value = emergencyText,
+                onValueChange = { emergencyText = it.take(30_000) },
+                label = { Text("给医生看的长期医疗说明") }, modifier = Modifier.fillMaxWidth(), minLines = 6)
             OutlinedButton(onClick = {
                 emergencyText = buildString {
                     MedicalFields.profile.forEach { (key, label) ->
@@ -350,6 +358,26 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
                     }
                 }
                 Button(onClick = { background {
+                    if (kind == MedicalKind.MEDICINE) {
+                        val values = fields.toMap()
+                        val times = values["times"].orEmpty().trim()
+                        val check = current.copy(values = values)
+                        require(times.isBlank() || MedicalSchedule.slots(check).isNotEmpty()) {
+                            "服药时间请输入 08:00,20:00 这样的24小时格式"
+                        }
+                        listOf("start", "end").forEach { key ->
+                            if (values[key].orEmpty().isNotBlank())
+                                require(runCatching { LocalDate.parse(values.getValue(key)) }.isSuccess) {
+                                    "日期请输入 2026-11-06 这样的格式"
+                                }
+                        }
+                        val days = values["weekdays"].orEmpty()
+                        require(days.isBlank() || days.split(',', '，', '、', ' ', ';', '；')
+                            .filter { it.isNotBlank() }.all {
+                                it.toIntOrNull()?.let { day -> day in 1..7 } == true }) {
+                            "每周服药日请填写1到7，例如1,3,5"
+                        }
+                    }
                     vault.put(kind, current.copy(values = fields.toMap()))
                     if (kind == MedicalKind.MEDICINE) MedicalReminders.scheduleAll(context)
                     withContext(Dispatchers.Main) { editing = current.copy(values = fields.toMap()); screen = "list" }
@@ -406,7 +434,8 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
                             TextButton(onClick = { deleteAttachment = file }) { Text("删除") }
                             TextButton(onClick = {
                                 renameAttachment = file; renameDraft = file.name
-                            }) { Text("改标题") }
+                                attachmentNote = file.note
+                            }) { Text("编辑信息") }
                         }
                     }
                 }
@@ -483,13 +512,19 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
     }
     renameAttachment?.let { file ->
         AlertDialog(onDismissRequest = { renameAttachment = null },
-            title = { Text("修改附件标题") },
-            text = { OutlinedTextField(value = renameDraft,
-                onValueChange = { renameDraft = it.take(120) },
-                label = { Text("标题") }, modifier = Modifier.fillMaxWidth()) },
+            title = { Text("附件标题与备注") },
+            text = { Column {
+                OutlinedTextField(value = renameDraft,
+                    onValueChange = { renameDraft = it.take(120) },
+                    label = { Text("标题") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = attachmentNote,
+                    onValueChange = { attachmentNote = it.take(2000) },
+                    label = { Text("备注") }, modifier = Modifier.fillMaxWidth())
+            } },
             confirmButton = { TextButton(onClick = {
                 renameAttachment = null
-                background { vault.renameFile(file.id, renameDraft); "标题已修改" }
+                background { vault.updateFileInfo(file.id, renameDraft, attachmentNote);
+                    "附件信息已修改" }
             }) { Text("保存") } },
             dismissButton = { TextButton(onClick = { renameAttachment = null }) { Text("取消") } })
     }
