@@ -33,11 +33,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -240,6 +243,17 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         } else if (page != 0) {
             page = 0
         } else {
+            // Rapid Back presses must not silently close the socket owner while
+            // the other person still believes an assistance session is alive.
+            if (assistSession != null) {
+                if (assistSession?.direction == RemoteAssistConsent.Direction.OUTGOING) {
+                    showAssistControllerPanel = true
+                }
+                previousBackTap = 0L
+                Toast.makeText(context, "远程协助尚未结束，请先点击“结束协助”再退出",
+                    Toast.LENGTH_SHORT).show()
+                return
+            }
             val now = SystemClock.elapsedRealtime()
             if (now - previousBackTap < 2_000L) (context as? Activity)?.finish()
             else {
@@ -261,6 +275,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
 
     BackHandler {
         when {
+            showAssistControllerPanel -> showAssistControllerPanel = false
             confirmSos -> confirmSos = false
             confirmCheckin -> confirmCheckin = false
             closing != null -> closing = null
@@ -770,79 +785,107 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     // It is opened immediately after sending a request and again on consent/frame transitions.
     assistSession?.takeIf { it.direction == RemoteAssistConsent.Direction.OUTGOING &&
         showAssistControllerPanel }?.let { session ->
-        AlertDialog(onDismissRequest = { showAssistControllerPanel = false },
-            title = { Text("远程协助 · ${peerName(session.relationId, session.peerFingerprint)}") },
-            text = {
-                Column(Modifier.heightIn(max = 530.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Dialog(onDismissRequest = { showAssistControllerPanel = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(modifier = Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.94f),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.fillMaxSize().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("远程协助 · ${peerName(session.relationId, session.peerFingerprint)}",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleMedium)
+                        TextButton(onClick = { showAssistControllerPanel = false }) {
+                            Text("收起")
+                        }
+                    }
                     Text(when (session.phase) {
                         RemoteAssistConsent.Phase.WAITING_FOR_REPLY ->
-                            "请求已发送，请等待对方点击‘同意协助’。首次请求60秒内有效。"
+                            "请求已发送，请等待对方点击同意；请求有效期60秒。"
                         RemoteAssistConsent.Phase.WAITING_FOR_PERSON -> "正在等待对方确认。"
                         RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
-                            "对方已同意。下一步必须由对方点击‘开始共享屏幕’，并通过安卓系统确认。" +
-                                "如果对方已经确认却仍没有画面，请让对方到‘设置 → 远程协助’查看画面发送状态。"
+                            "对方已同意。请让对方点击“开始共享屏幕”，通过安卓系统授权；" +
+                                "仍无画面时可在对方“设置 → 远程协助”查看画面发送状态。"
                         RemoteAssistConsent.Phase.ACTIVE ->
-                            "已进入远程协助。只有对方另外开启了无障碍服务后，点击和滑动才会生效。"
-                    })
-                    if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
-                        val preview = assistPreview
-                        val bitmap = remember(preview?.receivedAt) {
-                            preview?.let { BitmapFactory.decodeByteArray(it.jpeg, 0,
-                                it.jpeg.size)?.asImageBitmap() }
-                        }
-                        if (preview != null && bitmap != null) {
-                            Image(bitmap = bitmap,
-                                contentDescription = "已同意的远程手机画面，点击发送触摸",
-                                contentScale = ContentScale.FillBounds,
-                                modifier = Modifier.fillMaxWidth()
-                                    .aspectRatio(preview.width.toFloat() /
-                                        preview.height.coerceAtLeast(1).toFloat())
-                                    .pointerInput(session.sessionId) {
-                                        detectTapGestures { pos ->
-                                            runTask("远程点击") {
-                                                manager.sendRemoteAssistTap(
-                                                    (pos.x / size.width * 10000).toInt().coerceIn(0, 10000),
-                                                    (pos.y / size.height * 10000).toInt().coerceIn(0, 10000))
-                                            }
-                                        }
-                                    })
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(enabled = !busy, onClick = {
-                                    runTask("远程返回") { manager.sendRemoteAssistBack() }
-                                }) { Text("返回") }
-                                OutlinedButton(enabled = !busy, onClick = {
-                                    runTask("远程主页") { manager.sendRemoteAssistHome() }
-                                }) { Text("主页") }
+                            "屏幕已连接。点击画面可操作；对方需手动开启无障碍才可响应触摸。"
+                    }, style = MaterialTheme.typography.bodySmall)
+                    // The preview takes all remaining height. It is letterboxed with
+                    // its real aspect ratio, so tap coordinates match the remote screen.
+                    Box(Modifier.fillMaxWidth().weight(1f),
+                        contentAlignment = Alignment.Center) {
+                        if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
+                            val preview = assistPreview
+                            val bitmap = remember(preview?.receivedAt) {
+                                preview?.let { BitmapFactory.decodeByteArray(it.jpeg, 0,
+                                    it.jpeg.size)?.asImageBitmap() }
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(enabled = !busy, onClick = {
-                                    runTask("远程上滑") { manager.sendRemoteAssistSwipe(
-                                        5000, 7800, 5000, 2600) }
-                                }) { Text("向上滑") }
-                                OutlinedButton(enabled = !busy, onClick = {
-                                    runTask("远程下滑") { manager.sendRemoteAssistSwipe(
-                                        5000, 2600, 5000, 7800) }
-                                }) { Text("向下滑") }
-                            }
-                        } else Text("正在等待第一帧画面。若超过10秒无画面，请检查对方" +
-                            "是否完成安卓录屏授权、双方是否局域网认证在线。",
-                            style = MaterialTheme.typography.bodySmall)
+                            if (preview != null && bitmap != null) {
+                                BoxWithConstraints(Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center) {
+                                    val ratio = preview.width.toFloat() /
+                                        preview.height.coerceAtLeast(1).toFloat()
+                                    val displayWidth = minOf(maxWidth, maxHeight * ratio)
+                                    val displayHeight = displayWidth / ratio
+                                    Image(bitmap = bitmap,
+                                        contentDescription = "已同意的远程手机画面，点击发送触摸",
+                                        contentScale = ContentScale.FillBounds,
+                                        modifier = Modifier.width(displayWidth).height(displayHeight)
+                                            .pointerInput(session.sessionId) {
+                                                detectTapGestures { pos ->
+                                                    runTask("远程点击") {
+                                                        manager.sendRemoteAssistTap(
+                                                            (pos.x / size.width * 10000).toInt().coerceIn(0, 10000),
+                                                            (pos.y / size.height * 10000).toInt().coerceIn(0, 10000))
+                                                    }
+                                                }
+                                            })
+                                }
+                            } else Text("等待第一帧画面。超过10秒请检查对方录屏授权及画面发送状态。",
+                                style = MaterialTheme.typography.bodySmall)
+                        } else Text("等待家人确认并开启屏幕共享…",
+                            style = MaterialTheme.typography.bodyMedium)
                     }
-                    InlineActionFeedback(actionFeedback["远程点击"])
-                    InlineActionFeedback(actionFeedback["远程返回"])
-                    InlineActionFeedback(actionFeedback["远程主页"])
-                    InlineActionFeedback(actionFeedback["远程上滑"])
-                    InlineActionFeedback(actionFeedback["远程下滑"])
+                    if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
+                        Row(Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
+                                onClick = { runTask("远程返回") { manager.sendRemoteAssistBack() } }) {
+                                Text("返回")
+                            }
+                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
+                                onClick = { runTask("远程主页") { manager.sendRemoteAssistHome() } }) {
+                                Text("主页")
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
+                                onClick = { runTask("远程上滑") { manager.sendRemoteAssistSwipe(
+                                    5000, 7800, 5000, 2600) } }) { Text("向上滑") }
+                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
+                                onClick = { runTask("远程下滑") { manager.sendRemoteAssistSwipe(
+                                    5000, 2600, 5000, 7800) } }) { Text("向下滑") }
+                        }
+                    }
+                    val lastFeedback = listOf("远程点击", "远程返回", "远程主页", "远程上滑", "远程下滑")
+                        .mapNotNull { actionFeedback[it] }.lastOrNull()
+                    if (!lastFeedback.isNullOrBlank()) {
+                        Text(lastFeedback, style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { showAssistControllerPanel = false }) {
+                            Text("收起窗口")
+                        }
+                        TextButton(enabled = !busy, onClick = {
+                            showAssistControllerPanel = false
+                            runTask("结束远程协助") { manager.stopRemoteAssist() }
+                        }) { Text("结束协助") }
+                    }
                 }
-            },
-            confirmButton = { TextButton(enabled = !busy, onClick = {
-                showAssistControllerPanel = false
-                runTask("结束远程协助") { manager.stopRemoteAssist() }
-            }) { Text("结束协助") } },
-            dismissButton = { TextButton(onClick = {
-                showAssistControllerPanel = false
-            }) { Text("收起窗口") } })
+            }
+        }
     }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background, bottomBar = {

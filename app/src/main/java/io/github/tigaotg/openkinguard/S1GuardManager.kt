@@ -2245,8 +2245,17 @@ class S1GuardManager(context: Context) {
                     lastNotifiedLossStage = state.lastNotifiedLossStage - peer.relationId) to true
         }
         if (fresh) when (msg.payloadKind) {
-            RemoteAssistWire.REQUEST -> remoteAssistConsent.receiveRequest(
-                peer.relationId, peer.peerFingerprint, body.sessionId)
+            RemoteAssistWire.REQUEST -> {
+                val previous = remoteAssistConsent.snapshot()
+                val accepted = remoteAssistConsent.receiveRequest(
+                    peer.relationId, peer.peerFingerprint, body.sessionId)
+                if (accepted && previous != null && previous.sessionId != body.sessionId) {
+                    // An old projection must not survive a newly requested session.
+                    remoteAssistFrames.clear()
+                    remoteStreamReplay.clear()
+                    app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
+                }
+            }
             // An unseen request may wait in memory for up to 60 seconds, but
             // never gains any control permission without a foreground click.
             RemoteAssistWire.ACCEPT -> remoteAssistConsent.remoteDecision(peer.relationId,

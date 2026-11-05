@@ -44,9 +44,16 @@ internal class RemoteAssistConsent(private val clock: () -> Long = System::curre
     @Synchronized fun receiveRequest(relationId: String, peerFingerprint: String,
                                      sessionId: String): Boolean {
         val existing = snapshot()
-        if (existing != null) return existing.direction == Direction.INCOMING &&
-            existing.sessionId == sessionId && existing.relationId == relationId &&
-            existing.peerFingerprint == peerFingerprint
+        if (existing != null) {
+            if (existing.direction != Direction.INCOMING || existing.relationId != relationId ||
+                existing.peerFingerprint != peerFingerprint) return false
+            if (existing.sessionId == sessionId) return true
+            // A helper can recover after closing the controller app without first
+            // sending STOP. Replacing a prior *accepted* session always revokes
+            // its grant and starts another human approval prompt; it never resumes
+            // screen capture or remote gestures automatically.
+            if (existing.phase == Phase.WAITING_FOR_PERSON) return false
+        }
         current = Session(relationId, peerFingerprint, sessionId,
             Direction.INCOMING, Phase.WAITING_FOR_PERSON,
             clock() + inviteLifetimeMillis)

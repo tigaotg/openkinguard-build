@@ -6,6 +6,9 @@ import android.content.Context
 /** Single LAN socket/NSD owner shared by the Activity and the optional foreground service. */
 internal object S1Runtime {
     @Volatile private var backgroundListening = false
+    // A projection foreground service may temporarily own the transport even
+    // when the person opens another app. This flag is never persisted.
+    @Volatile private var assistForegroundListening = false
     @Volatile private var visible = false
     private var uiOnChange: (() -> Unit)? = null
     // The manager stores only context.applicationContext; no Activity/Window is retained.
@@ -24,7 +27,7 @@ internal object S1Runtime {
     @Synchronized fun detachUi() {
         visible = false
         uiOnChange = null
-        if (!backgroundListening) managerInstance?.stop()
+        if (!backgroundListening && !assistForegroundListening) managerInstance?.stop()
     }
 
     @Synchronized fun attachService(context: Context) {
@@ -34,7 +37,22 @@ internal object S1Runtime {
 
     @Synchronized fun detachService() {
         backgroundListening = false
-        if (!visible) managerInstance?.stop()
+        if (!visible && !assistForegroundListening) managerInstance?.stop()
+    }
+
+    @Synchronized fun attachAssistForeground(context: Context) {
+        assistForegroundListening = true
+        try {
+            manager(context).start { uiOnChange?.invoke() }
+        } catch (failure: Exception) {
+            assistForegroundListening = false
+            throw failure
+        }
+    }
+
+    @Synchronized fun detachAssistForeground() {
+        assistForegroundListening = false
+        if (!visible && !backgroundListening) managerInstance?.stop()
     }
 
     fun isBackgroundListening(): Boolean = backgroundListening

@@ -88,6 +88,10 @@ class RemoteAssistProjectionService : Service() {
         transferStatus = "系统已授权，正在准备画面"
         main.postDelayed(authorizationWatchdog, 5_000L)
         try {
+            // The user has explicitly approved this one projection. Keeping its
+            // foreground service alive lets family members assist on other apps;
+            // it does not grant any unattended future sessions.
+            S1Runtime.attachAssistForeground(applicationContext)
             val service = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                 as MediaProjectionManager
             val active = requireNotNull(service.getMediaProjection(code, resultData))
@@ -193,6 +197,7 @@ class RemoteAssistProjectionService : Service() {
         runCatching { projection?.stop() }
         captureThread?.quitSafely()
         worker.shutdownNow()
+        S1Runtime.detachAssistForeground()
         if (transferStatus == "画面已通过直连发送") transferStatus = "共享已经结束"
         super.onDestroy()
     }

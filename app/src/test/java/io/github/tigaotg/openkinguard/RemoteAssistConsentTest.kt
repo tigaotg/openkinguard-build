@@ -33,6 +33,34 @@ class RemoteAssistConsentTest {
         assertTrue(runCatching { subject.localDecision(id, true) }.isFailure)
     }
 
+    @Test fun `new signed invite from same helper revokes an old active grant`() {
+        val subject = RemoteAssistConsent { 1_000L }
+        val first = UUID.randomUUID().toString()
+        val second = UUID.randomUUID().toString()
+        assertTrue(subject.receiveRequest(relation, fp, first))
+        subject.localDecision(first, true)
+        assertTrue(subject.screenStarted(first))
+        assertTrue(subject.receiveRequest(relation, fp, second))
+        assertEquals(RemoteAssistConsent.Phase.WAITING_FOR_PERSON, subject.snapshot()?.phase)
+        assertEquals(second, subject.snapshot()?.sessionId)
+        assertFalse(subject.screenStarted(first))
+        assertFalse(subject.screenStarted(second))
+        subject.localDecision(second, true)
+        assertTrue(subject.screenStarted(second))
+    }
+
+    @Test fun `different helper cannot replace an active remote session`() {
+        val subject = RemoteAssistConsent { 1_000L }
+        val first = UUID.randomUUID().toString()
+        assertTrue(subject.receiveRequest(relation, fp, first))
+        subject.localDecision(first, true)
+        assertTrue(subject.screenStarted(first))
+        assertFalse(subject.receiveRequest(relation, "b".repeat(64),
+            UUID.randomUUID().toString()))
+        assertEquals(first, subject.snapshot()?.sessionId)
+        assertEquals(RemoteAssistConsent.Phase.ACTIVE, subject.snapshot()?.phase)
+    }
+
     @Test fun `remote acceptance must match our outstanding session and fingerprint`() {
         val helper = RemoteAssistConsent { 1_000L }
         val request = helper.request(relation, fp)

@@ -31,17 +31,17 @@ jobs:
           sed -i 's/compose-bom:2026.09.00/compose-bom:2025.10.00/' app/build.gradle.kts
           sed -i 's/signingConfig = signingConfigs.getByName("isolatedPilotV4")/signingConfig = null/' app/build.gradle.kts
           chmod +x gradlew
-          ./gradlew --no-daemon :security:protocol:test :app:assemblePilotV4 --stacktrace
+          ./gradlew --no-daemon :security:protocol:test :app:testPilotV4UnitTest :app:assemblePilotV4 --stacktrace
       - name: Package APK and signing tool
         run: |
           mkdir -p build-out
           APK_FILE=$(find app/build/outputs/apk/pilotV4 -maxdepth 1 -name '*.apk' -type f -print -quit)
           test -n "$APK_FILE" || exit 1
-          cp "$APK_FILE" build-out/OpenKinGuard-0.9.19-PilotV4-unsigned.apk
+          cp "$APK_FILE" build-out/OpenKinGuard-0.9.20-PilotV4-unsigned.apk
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" build-out/
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-0.9.19-unsigned-build
+          name: OpenKinGuard-0.9.20-unsigned-build
           path: build-out/*
           if-no-files-found: error
           retention-days: 7
