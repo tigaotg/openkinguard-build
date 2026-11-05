@@ -36,6 +36,20 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(restored["note"], "家里的备用机")
         self.assertIsNotNone(restored["restoredAt"])
 
+    def test_permanently_forget_only_revoked_devices(self):
+        self.reg.approve(self.fp, "荣耀 7X", "Honor")
+        self.reg.set_note(self.fp, "旧设备")
+        with self.assertRaises(ValueError):
+            self.reg.forget_revoked(self.fp)
+        self.reg.revoke(self.fp)
+        self.reg.forget_revoked(self.fp)
+        self.assertEqual(self.reg.list_devices(set())["revoked"], [])
+        self.assertFalse(self.reg.was_approved(self.fp))
+        with self.assertRaises(ValueError):
+            self.reg.set_note(self.fp, "被删除的设备")
+        with self.assertRaises(ValueError):
+            self.reg.forget_revoked(self.fp)
+
     def test_existing_manual_allowlist_has_unknown_original_date(self):
         legacy = self.reg.list_devices({self.fp})["approved"][0]
         self.assertIsNone(legacy["boundAt"])
@@ -84,6 +98,26 @@ class OwnerRevokeTests(unittest.TestCase):
             restored = change_device("restore", self.fp, self.store, self.reg)
             self.assertEqual(restored["status"], "approved")
             self.assertIn(self.fp, self.allowed)
+
+    def test_delete_requires_revocation_and_removes_all_router_records(self):
+        with patch("manage_join.checked_call", side_effect=self.uci):
+            with self.assertRaisesRegex(ValueError, "先取消绑定"):
+                change_device("delete-device", self.fp, self.store, self.reg)
+            self.assertIn(self.fp, self.allowed)
+            change_device("revoke", self.fp, self.store, self.reg)
+            # Multiple outstanding and approved attempts cannot survive deletion.
+            pending = self.store.submit(self.store.new_invite(), self.fp)
+            assert self.store.status(pending, self.fp) == "pending"
+            result = change_device("delete-device", self.fp, self.store, self.reg)
+            self.assertEqual(result["status"], "deleted")
+            self.assertEqual(self.reg.list_devices(set())["revoked"], [])
+            self.assertEqual(self.store.status(pending, self.fp), "expired")
+            self.assertFalse(self.store.is_approved(self.fp))
+            self.assertNotIn(self.fp, self.allowed)
+            with self.assertRaises(ValueError):
+                change_device("restore", self.fp, self.store, self.reg)
+            with self.assertRaises(ValueError):
+                change_device("delete-device", self.fp, self.store, self.reg)
 
     def test_cannot_authorize_an_arbitrary_fingerprint_by_restore(self):
         with patch("manage_join.checked_call", side_effect=self.uci):

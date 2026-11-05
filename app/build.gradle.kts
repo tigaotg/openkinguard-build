@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 62
-        versionName = "0.9.27-controller-session-lifecycle"
+        versionCode = 63
+        versionName = "0.9.28-controller-fit-relay-approval"
     }
 
     buildTypes {

@@ -64,7 +64,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import okhttp3.WebSocket
 import java.text.DateFormat
 import java.util.Date
 
@@ -171,7 +170,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var ownDraft by remember { mutableStateOf(manager.ownNickname()) }
     var relayDraft by remember { mutableStateOf(manager.snapshot().history.relayEndpoint) }
     var relayJoinInvite by remember { mutableStateOf<RelayJoinInvite?>(null) }
-    var relayJoinSocket by remember { mutableStateOf<WebSocket?>(null) }
+    var relayJoinSocket by remember { mutableStateOf<RelayEnrollmentHandle?>(null) }
+    var relayJoinAttempt by remember { mutableIntStateOf(0) }
     var relayJoinInProgress by remember { mutableStateOf(false) }
     var nostrDraft by remember { mutableStateOf(manager.snapshot().history.nostrRelayEndpoints) }
     var contactName by remember { mutableStateOf("") }
@@ -474,35 +474,49 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             confirmButton = {
                 TextButton(onClick = {
                     relayJoinInvite = null
-                    relayJoinSocket?.close(1000, "replaced by new enrollment")
+                    relayJoinAttempt += 1
+                    val attempt = relayJoinAttempt
+                    relayJoinSocket?.cancel()
+                    relayJoinSocket = null
                     relayJoinInProgress = true
-                    relayJoinSocket = S2RelayEnrollment.begin(invite, AndroidDeviceKeyStore(),
-                        nickname = manager.ownNickname(),
-                        model = listOf(Build.MANUFACTURER, Build.MODEL).filter { it.isNotBlank() }
-                            .distinct().joinToString(" "),
-                        progress = { status -> handler.post {
-                            if (!relayJoinInProgress && status.startsWith("加入未完成")) return@post
-                            privateJoinFeedback = status
-                            if (status.startsWith("加入未完成") ||
-                                status.startsWith("路由器主人已批准") ||
-                                status.startsWith("路由器已批准") ||
-                                status.startsWith("加入申请等待超时")) {
-                                relayJoinInProgress = false
-                            }
-                            refresh()
-                        } },
-                        approved = {
-                            val previous = relayDraft.lines().map { it.trim() }
-                                .filter { it.isNotBlank() }
-                            val combined = if (invite.url in previous) previous
-                                else previous + invite.url
-                            require(combined.size <= 3) {
-                                "最多3个私人中继，请先删除一个旧节点再扫码"
-                            }
-                            val updated = combined.joinToString("\n")
-                            manager.configureRelay(updated, true)
-                            handler.post { relayDraft = updated; refresh() }
-                        })
+                    privateJoinFeedback = "正在连接家庭路由器并核对设备身份…"
+                    val result = runCatching {
+                        S2RelayEnrollment.begin(invite, AndroidDeviceKeyStore(),
+                            nickname = manager.ownNickname(),
+                            model = listOf(Build.MANUFACTURER, Build.MODEL)
+                                .filter { it.isNotBlank() }.distinct().joinToString(" "),
+                            progress = { status -> handler.post {
+                                // Previous requests, including after an explicit Cancel,
+                                // must never overwrite the current approval result.
+                                if (!RelayJoinUiPolicy.shouldApply(relayJoinAttempt, attempt)) return@post
+                                privateJoinFeedback = status
+                                if (RelayJoinUiPolicy.terminal(status)) {
+                                    relayJoinInProgress = false
+                                    relayJoinSocket = null
+                                }
+                                refresh()
+                            } },
+                            approved = {
+                                // Read the actual saved addresses, not an older UI draft
+                                // captured before router approval arrived.
+                                val previous = manager.snapshot().history.relayEndpoint.lines()
+                                    .map { it.trim() }.filter { it.isNotBlank() }
+                                val combined = if (invite.url in previous) previous
+                                    else previous + invite.url
+                                require(combined.size <= 3) {
+                                    "最多3个私人中继；请先删除一个旧节点再核验本机授权"
+                                }
+                                val updated = combined.joinToString("\n")
+                                manager.configureRelay(updated, true)
+                                handler.post { relayDraft = updated; refresh() }
+                            })
+                    }
+                    relayJoinSocket = result.getOrNull()
+                    result.onFailure { error ->
+                        relayJoinInProgress = false
+                        privateJoinFeedback = "无法开始核验家庭节点：" +
+                            (error.message?.take(90) ?: error.javaClass.simpleName)
+                    }
                 }) { Text("指纹一致，提交申请") }
             }, dismissButton = { TextButton(onClick = { relayJoinInvite = null }) {
                 Text("取消")
@@ -2549,7 +2563,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
                 }
                 if (settingsSection == SettingsDestination.PRIVATE) {
-                Text("扫码加入自己管理的路由器，批准后自动保存。",
+                Text("扫码加入自己管理的路由器；若路由器此前已批准本机，重新扫码会直接验证已有授权，无需再次人工批准。",
                     style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(enabled = !relayJoinInProgress, onClick = {
@@ -2562,10 +2576,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }) { Text("扫描家庭节点二维码") }
                     if (relayJoinInProgress) {
                         OutlinedButton(onClick = {
-                            relayJoinSocket?.close(1000, "cancelled by user")
+                            relayJoinAttempt += 1
+                            relayJoinSocket?.cancel()
                             relayJoinSocket = null
                             relayJoinInProgress = false
-                            privateJoinFeedback = "已取消等待批准。路由器上可能仍有旧申请，可自行拒绝。"
+                            privateJoinFeedback = "已取消手机端的等待；路由器仍可能保留以前的申请或批准。"
                         }) { Text("取消等待") }
                     }
                 }

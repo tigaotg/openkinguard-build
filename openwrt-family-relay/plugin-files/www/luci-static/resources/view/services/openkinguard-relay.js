@@ -148,6 +148,19 @@ return view.extend({
 							.then(refreshAll).catch(showJoinError);
 					}
 				}, revoked ? '重新授权' : '取消绑定'));
+				if (revoked) {
+					panel.appendChild(document.createTextNode(' '));
+					panel.appendChild(E('button', {
+						'class': 'btn cbi-button cbi-button-negative',
+						'click': function() {
+							var notice = '彻底删除此已取消设备在本路由器上的记录、昵称、备注及恢复资格。' +
+								'\\n以后如需加入，必须重新扫码并由管理员批准。此操作无法撤销。' +
+								'\\n设备公钥指纹：' + fp + '\\n\\n请输入“彻底删除”确认：';
+							if (window.prompt(notice, '') !== '彻底删除') return;
+							return joinAction('delete-device', fp).then(refreshAll).catch(showJoinError);
+						}
+					}, '彻底删除'));
+				}
 				return panel;
 			}
 			function refreshAll() {
@@ -213,7 +226,9 @@ return view.extend({
 				E('p', {}, '昵称与型号由手机在扫码申请时提供，仅作识别线索。真正的设备身份以你核对的公钥指纹为准。取消绑定会中断现有连接，但不会清除该手机里的家人关系和历史。'),
 				approvedBox,
 				E('h4', {}, '已取消设备 · 可恢复'),
-				E('p', {}, '这里只保留曾经获准的设备记录。重新授权会恢复原指纹的访问资格，无须重新扫码；请先确认这仍是你信任的手机。'),
+				E('p', {}, '已取消设备支持“修改备注／重新授权／彻底删除”。' +
+					'彻底删除会清除路由器上该设备的昵称、备注及历史授权记录，无法直接恢复；' +
+					'手机若以后重新加入，需要再次扫码并经你明确批准。不会删除手机本地的家人关系或历史。'),
 				revokedBox
 			]);
 			refreshAll();

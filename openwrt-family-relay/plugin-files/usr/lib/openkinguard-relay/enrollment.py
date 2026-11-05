@@ -137,6 +137,24 @@ class EnrollmentStore:
             return None, changed
         self._change(update)
 
+    def purge_device(self, fingerprint: str) -> int:
+        """Remove pending, rejected and approved invitation records for this key.
+
+        The durable UCI allowlist must be checked separately before the
+        device-registry entry is erased. Fresh enrollment requires a new QR.
+        """
+        if not FP.fullmatch(fingerprint):
+            raise ValueError("invalid fingerprint")
+        def update(data, now):
+            removed = [
+                request_id for request_id, entry in data["pending"].items()
+                if entry.get("fingerprint") == fingerprint
+            ]
+            for request_id in removed:
+                del data["pending"][request_id]
+            return len(removed), bool(removed)
+        return self._change(update)
+
     def decide(self, request_id: str, approved: bool, persist_approval=None) -> str:
         if not ID.fullmatch(request_id):
             raise ValueError("invalid request id")

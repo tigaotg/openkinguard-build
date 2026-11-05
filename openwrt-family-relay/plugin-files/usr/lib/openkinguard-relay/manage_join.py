@@ -76,6 +76,19 @@ def change_device(action: str, fingerprint: str, store: EnrollmentStore,
         registry.revoke(fingerprint)
         checked_call("/etc/init.d/openkinguard-relay", "restart")
         return {"ok": True, "fingerprint": fingerprint, "status": "revoked"}
+    if action == "delete-device":
+        # Delete only previously revoked devices. Keep UCI authorization
+        # unchanged; the action must never silently revoke a live device.
+        if fingerprint in allowed_fingerprints():
+            raise ValueError("设备目前仍已授权；请先取消绑定，再彻底删除")
+        if not registry.is_revoked(fingerprint):
+            raise ValueError("只能彻底删除已取消授权的设备记录")
+        # Invalidate ALL old pending/approved requests for this public key.
+        store.purge_device(fingerprint)
+        if fingerprint in allowed_fingerprints():
+            raise ValueError("设备在删除期间重新获授权，请先取消授权")
+        registry.forget_revoked(fingerprint)
+        return {"ok": True, "fingerprint": fingerprint, "status": "deleted"}
     if action == "restore":
         if fingerprint in allowed:
             raise ValueError("该设备已处于允许连接状态")
@@ -148,7 +161,7 @@ def invite(store: EnrollmentStore) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("invite", "list", "approve", "reject",
-                                           "revoke", "restore", "set-note",
+                                           "revoke", "restore", "delete-device", "set-note",
                                            "firewall-status", "open-ipv6", "close-ipv6"))
     parser.add_argument("request_id", nargs="?")
     parser.add_argument("value", nargs="?")
@@ -174,9 +187,9 @@ def main() -> None:
                 raise ValueError("list 不接受额外参数")
             result = {"ok": True, "pending": store.list_pending(),
                       **registry.list_devices(allowed_fingerprints())}
-        elif args.action in ("revoke", "restore"):
+        elif args.action in ("revoke", "restore", "delete-device"):
             if not args.request_id:
-                raise ValueError("请指定要取消或恢复授权的设备指纹")
+                raise ValueError("请指定要取消、恢复或彻底删除的设备指纹")
             result = change_device(args.action, args.request_id, store, registry)
         elif args.action == "set-note":
             if not args.request_id or args.value is None:

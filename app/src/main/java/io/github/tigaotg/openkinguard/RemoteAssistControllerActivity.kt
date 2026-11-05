@@ -116,7 +116,7 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
     var diagnosticVisible by remember { mutableStateOf(false) }
     var confirmEnd by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
-    var toolbarVisible by remember { mutableStateOf(true) }
+    var toolbarVisible by remember { mutableStateOf(false) }
 
     fun command(label: String, perform: () -> String) {
         scope.launch {
@@ -144,138 +144,151 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
     }
     BackHandler { onCollapse() }
 
-    // This Box NEVER changes its measurements when video resolution, fps or
-    // navigation controls change. The native renderer stays attached.
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (phase == RemoteAssistConsent.Phase.ACTIVE) {
-            AndroidView(factory = { ctx ->
-                SurfaceViewRenderer(ctx).also { manager.attachRemoteRtcRenderer(it) }
-            }, modifier = Modifier.fillMaxSize(),
-                onRelease = { manager.detachRemoteRtcRenderer(it) })
-            // Pointer events are mapped through WebRTC SCALE_ASPECT_FIT letterboxing.
-            Box(Modifier.fillMaxSize().pointerInput(sessionId) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val start = down.position
-                    var last = start
-                    var wasReleased = false
-                    var multiTouch = false
-                    var releasedAt = down.uptimeMillis
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.count { it.pressed } > 1) {
-                            multiTouch = true
-                        }
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        last = change.position
-                        releasedAt = change.uptimeMillis
-                        change.consume()
-                        if (!change.pressed) {
-                            wasReleased = true
-                            break
-                        }
+
+    // Video and system navigation occupy separate, non-overlapping rectangles.
+    // The native renderer remains attached throughout this consented session.
+    // Black letterboxing preserves the *entire* remote phone frame on any aspect ratio.
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(Modifier.fillMaxWidth().weight(1f).background(Color.Black)) {
+            if (phase == RemoteAssistConsent.Phase.ACTIVE) {
+                BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    val video = remoteSize
+                    val fitted = video?.let {
+                        RemoteAssistFrameLayout.fit(maxWidth.value, maxHeight.value,
+                            it.first, it.second)
                     }
-                    if (wasReleased && !multiTouch) {
-                        val video = touchVideoSize
-                        val container = size
-                        val startPoint = video?.let {
-                            RemoteAssistTouchGeometry.map(start.x, start.y,
-                                container.width, container.height, it.first, it.second)
-                        }
-                        if (startPoint != null && video != null) {
-                            val elapsed = (releasedAt - down.uptimeMillis).coerceAtLeast(0)
-                            val distance = hypot((last.x - start.x).toDouble(),
-                                (last.y - start.y).toDouble())
-                            val touchSlop = viewConfiguration.touchSlop.toDouble()
-                            if (distance > touchSlop) {
-                                val endPoint = RemoteAssistTouchGeometry.map(
-                                    last.x, last.y, container.width, container.height,
-                                    video.first, video.second, clamp = true)
-                                if (endPoint != null) {
-                                    command("滑动") {
-                                        manager.sendRemoteAssistSwipe(
-                                            startPoint.x, startPoint.y, endPoint.x, endPoint.y,
-                                            elapsed.toInt().coerceIn(120, 1000))
+                    // Only meaningful video aspect changes remeasure the SAME renderer.
+                    // Never use "frame fresh" as a condition for attaching the surface.
+                    val viewport = if (fitted != null)
+                        Modifier.width(fitted.width.dp).height(fitted.height.dp)
+                    else Modifier.fillMaxSize()
+                    Box(viewport, contentAlignment = Alignment.Center) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceViewRenderer(ctx).also { manager.attachRemoteRtcRenderer(it) }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                            onRelease = { manager.detachRemoteRtcRenderer(it) }
+                        )
+                        Box(Modifier.fillMaxSize().pointerInput(sessionId, video) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val start = down.position
+                                var last = start
+                                var released = false
+                                var multiTouch = false
+                                var releasedAt = down.uptimeMillis
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.count { it.pressed } > 1) multiTouch = true
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                        ?: break
+                                    last = change.position
+                                    releasedAt = change.uptimeMillis
+                                    change.consume()
+                                    if (!change.pressed) {
+                                        released = true
+                                        break
                                     }
                                 }
-                            } else if (elapsed >= viewConfiguration.longPressTimeoutMillis) {
-                                command("长按") {
-                                    manager.sendRemoteAssistSwipe(
-                                        startPoint.x, startPoint.y,
-                                        startPoint.x, startPoint.y, 650)
-                                }
-                            } else {
-                                command("点击") {
-                                    manager.sendRemoteAssistTap(startPoint.x, startPoint.y)
+                                if (released && !multiTouch) {
+                                    val videoSize = touchVideoSize
+                                    val container = size
+                                    val startPoint = videoSize?.let {
+                                        RemoteAssistTouchGeometry.map(start.x, start.y,
+                                            container.width, container.height, it.first, it.second)
+                                    }
+                                    if (startPoint != null && videoSize != null) {
+                                        val elapsed = (releasedAt - down.uptimeMillis).coerceAtLeast(0)
+                                        val distance = hypot((last.x - start.x).toDouble(),
+                                            (last.y - start.y).toDouble())
+                                        if (distance > viewConfiguration.touchSlop) {
+                                            val finishPoint = RemoteAssistTouchGeometry.map(
+                                                last.x, last.y,
+                                                container.width, container.height,
+                                                videoSize.first, videoSize.second, clamp = true)
+                                            if (finishPoint != null) command("滑动") {
+                                                manager.sendRemoteAssistSwipe(
+                                                    startPoint.x, startPoint.y,
+                                                    finishPoint.x, finishPoint.y,
+                                                    elapsed.toInt().coerceIn(120, 1000))
+                                            }
+                                        } else if (elapsed >= viewConfiguration.longPressTimeoutMillis) {
+                                            command("长按") {
+                                                manager.sendRemoteAssistSwipe(
+                                                    startPoint.x, startPoint.y,
+                                                    startPoint.x, startPoint.y, 650)
+                                            }
+                                        } else command("点击") {
+                                            manager.sendRemoteAssistTap(startPoint.x, startPoint.y)
+                                        }
+                                    }
                                 }
                             }
+                        })
+                    }
+                }
+            } else {
+                Text(
+                    text = when (phase) {
+                        RemoteAssistConsent.Phase.WAITING_FOR_REPLY ->
+                            "已发送请求，等待对方同意"
+                        RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
+                            "对方已同意，等待 Android 屏幕共享授权"
+                        else -> "等待远程屏幕共享"
+                    },
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.Center).padding(28.dp))
+            }
+
+            // Top tools are hidden by default: only this small triangle remains.
+            // It overlays the video but does not change the video's measurements.
+            Column(Modifier.align(Alignment.TopCenter),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                TextButton(
+                    onClick = { toolbarVisible = !toolbarVisible },
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.70f))
+                ) { Text(if (toolbarVisible) "▲" else "▼", color = Color.White) }
+                if (toolbarVisible) {
+                    Row(Modifier.fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.86f))
+                        .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("远程协助", color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.weight(1f).padding(start = 6.dp))
+                        TextButton(onClick = {
+                            report = manager.remoteAssistDiagnosticReport()
+                            diagnosticVisible = true
+                        }) { Text("诊断", color = Color.White) }
+                        TextButton(onClick = onCollapse) { Text("收起", color = Color.White) }
+                        TextButton(onClick = { confirmEnd = true }) {
+                            Text("结束", color = Color.White)
                         }
                     }
                 }
-            })
-        } else {
-            Text(
-                text = when (phase) {
-                    RemoteAssistConsent.Phase.WAITING_FOR_REPLY ->
-                        "已发送请求，等待对方同意"
-                    RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
-                        "对方已同意，等待 Android 屏幕共享授权"
-                    else -> "等待远程屏幕共享"
-                },
-                color = Color.White,
-                modifier = Modifier.align(Alignment.Center).padding(28.dp))
+            }
         }
 
-        // Overlay never participates in video sizing.
+        // An opaque BLACK navigation strip below the video: the stream cannot
+        // appear beneath, between or behind these Android-style action buttons.
         Row(
-            modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter)
-                .background(Color.Black.copy(alpha = 0.72f))
-                .padding(horizontal = 5.dp, vertical = 5.dp),
+            modifier = Modifier.fillMaxWidth().height(70.dp)
+                .background(Color.Black).padding(horizontal = 6.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("远程控制", color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.weight(1f).padding(start = 10.dp))
-            TextButton(onClick = { toolbarVisible = !toolbarVisible }) {
-                Text(if (toolbarVisible) "隐藏按键" else "显示按键")
+            TextButton(modifier = Modifier.weight(1f),
+                onClick = { command("返回") { manager.sendRemoteAssistBack() } }) {
+                Text("‹  返回", color = Color.White)
             }
-            TextButton(onClick = {
-                report = manager.remoteAssistDiagnosticReport()
-                diagnosticVisible = true
-            }) { Text("诊断") }
-            TextButton(onClick = onCollapse) { Text("收起") }
-            TextButton(onClick = { confirmEnd = true }) { Text("结束") }
-        }
-
-        if (toolbarVisible) {
-            Column(
-                modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.76f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                if (feedback.isNotBlank()) {
-                    Text(feedback, style = MaterialTheme.typography.labelSmall,
-                        color = Color.White, maxLines = 2)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(55.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(modifier = Modifier.weight(1f),
-                        onClick = { command("返回") { manager.sendRemoteAssistBack() } }) {
-                        Text("‹  返回", color = Color.White)
-                    }
-                    TextButton(modifier = Modifier.weight(1f),
-                        onClick = { command("主页") { manager.sendRemoteAssistHome() } }) {
-                        Text("○  主页", color = Color.White)
-                    }
-                    TextButton(modifier = Modifier.weight(1f),
-                        onClick = { command("最近任务") { manager.sendRemoteAssistRecents() } }) {
-                        Text("▢  多任务", color = Color.White)
-                    }
-                }
+            TextButton(modifier = Modifier.weight(1f),
+                onClick = { command("主页") { manager.sendRemoteAssistHome() } }) {
+                Text("○  主页", color = Color.White)
+            }
+            TextButton(modifier = Modifier.weight(1f),
+                onClick = { command("最近任务") { manager.sendRemoteAssistRecents() } }) {
+                Text("▢  多任务", color = Color.White)
             }
         }
     }

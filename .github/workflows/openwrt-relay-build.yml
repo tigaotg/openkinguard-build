@@ -1,0 +1,42 @@
+name: OpenKinGuard OpenWrt family relay source + tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'openwrt-family-relay/**'
+      - '.github/workflows/openwrt-relay-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check 'cryptography>=42' 'websockets>=11,<17'
+      - name: Run router relay regression tests
+        run: python -m unittest discover -s openwrt-family-relay/tests -p 'test_*.py' -v
+      - name: Check scripts and LuCI JavaScript syntax
+        run: |
+          python -m compileall -q openwrt-family-relay/plugin-files/usr/lib/openkinguard-relay
+          sh -n openwrt-family-relay/install-on-openwrt.sh
+          sh -n openwrt-family-relay/plugin-files/etc/init.d/openkinguard-relay
+          node --check openwrt-family-relay/plugin-files/www/luci-static/resources/view/services/openkinguard-relay.js
+      - name: Create restorable OpenWrt source archives
+        run: |
+          mkdir -p dist
+          tar -czf dist/OpenKinGuard-family-relay-0.3.3-source.tar.gz openwrt-family-relay
+          zip -qr dist/OpenKinGuard-family-relay-0.3.3-source.zip openwrt-family-relay -x '*__pycache__*' '*.pyc'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenKinGuard-family-relay-0.3.3-source
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

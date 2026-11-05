@@ -79,6 +79,22 @@ class DeviceRegistry:
             return None, True
         self._change(update)
 
+    def forget_revoked(self, fingerprint: str) -> None:
+        """Irreversibly discard only a *revoked* identity and its display metadata.
+
+        Caller MUST also verify the live UCI allowlist is missing this fingerprint.
+        Removing an approved identity from this file alone must never change access.
+        """
+        if not FP.fullmatch(fingerprint):
+            raise ValueError("invalid fingerprint")
+        def update(devices, now):
+            record = devices.get(fingerprint)
+            if record is None or record.get("status") != "revoked":
+                raise ValueError("only a recorded revoked device can be forgotten")
+            del devices[fingerprint]
+            return None, True
+        self._change(update)
+
     def is_revoked(self, fingerprint: str) -> bool:
         return self._change(lambda devices, now: (
             devices.get(fingerprint, {}).get("status") == "revoked", False))
