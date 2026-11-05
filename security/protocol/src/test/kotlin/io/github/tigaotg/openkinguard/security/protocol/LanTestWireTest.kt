@@ -42,17 +42,17 @@ class LanTestWireTest {
         assertEquals(relation, LanTestWire.body(decoded.message).relationId)
     }
 
-    @Test fun remoteAssistJpegFragmentIsNotMisparsedAsSosExercise() {
+    @Test fun signedWebRtcSdpChunksUseAuthenticatedCarrierWithoutVideoPayloads() {
         val session = UUID.randomUUID().toString()
-        val fragment = ByteArray(2000) { (it % 251).toByte() }
-        val payload = RemoteAssistStreamWire.frame(relation, session,
-            UUID.randomUUID().toString(), 0, 1, 420, 740, fragment)
+        val content = ByteArray(900) { (it % 251).toByte() }
+        val payload = RemoteAssistStreamWire.rtc(relation, session, "offer",
+            UUID.randomUUID().toString(), 0, 1, content)
         assertTrue(payload.size > 512)
         val decoded = LanTestWire.decode(LanTestWire.encode(
-            signedAssist(session, RemoteAssistStreamWire.FRAME, payload)))
+            signedAssist(session, RemoteAssistStreamWire.RTC, payload)))
         assertTrue(SignedProtocol.verify(decoded.message, decoded.signature, keyPair.public))
         assertEquals(relation, LanTestWire.body(decoded.message).relationId)
-        assertArrayEquals(fragment, RemoteAssistStreamWire.decode(decoded.message).jpegPart)
+        assertArrayEquals(content, RemoteAssistStreamWire.decode(decoded.message).rtcBytes)
     }
 
     @Test fun remoteAssistAckUsesTheSameAuthenticatedCarrier() {

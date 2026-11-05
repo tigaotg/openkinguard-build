@@ -50,10 +50,6 @@ object LanTestWire {
                 val assist = RemoteAssistStreamWire.decode(message)
                 Body(assist.relationId, assist.respondsTo)
             }
-            in RemoteAssistVideoWire.requestKinds, RemoteAssistVideoWire.ACK -> {
-                val assist = RemoteAssistVideoWire.decode(message)
-                Body(assist.relationId, assist.respondsTo.takeIf { it.isNotBlank() })
-            }
             else -> {
                 // The same bounded, signed frame carrier also transports S1 exercise cases.
                 val exercise = S1CaseWire.body(message)
@@ -105,9 +101,7 @@ object LanTestWire {
             val length = input.readInt()
             // Keep the original 512-byte bound for SOS/location/control.
             // A screen frame may contain a separately validated JPEG fragment.
-            val maxLength = if (kind in RemoteAssistStreamWire.kinds ||
-                kind in RemoteAssistVideoWire.requestKinds ||
-                kind == RemoteAssistVideoWire.ACK) 4500 else 512
+            val maxLength = if (kind in RemoteAssistStreamWire.kinds) 4500 else 512
             require(length in 1..maxLength && length <= input.available() - 4) {
                 "Invalid payload length"
             }

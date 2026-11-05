@@ -81,8 +81,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     val handler = remember { Handler(Looper.getMainLooper()) }
     var snapshot by remember { mutableStateOf(manager.snapshot()) }
     var assistSession by remember { mutableStateOf(manager.remoteAssistSession()) }
-    var assistPreview by remember { mutableStateOf(manager.remoteAssistPreview()) }
-    var assistVideoSize by remember { mutableStateOf(manager.remoteAssistVideoSize()) }
+    var assistVideoSize by remember { mutableStateOf(manager.remoteAssistRtcSize()) }
     var assistStartFeedback by remember { mutableStateOf("") }
     var assistTransferStatus by remember {
         mutableStateOf(RemoteAssistProjectionService.currentTransferStatus())
@@ -236,8 +235,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         while (true) {
             val current = manager.remoteAssistSession()
             assistSession = current
-            assistPreview = manager.remoteAssistPreview()
-            assistVideoSize = manager.remoteAssistVideoSize()
+            assistVideoSize = manager.remoteAssistRtcSize()
             assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             if (current == null) break
             delay(if (current.direction == RemoteAssistConsent.Direction.OUTGOING) 180 else 500)
@@ -461,7 +459,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     fun refresh() { handler.post {
         snapshot = manager.snapshot()
         assistSession = manager.remoteAssistSession()
-        assistPreview = manager.remoteAssistPreview()
         assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
         GuardWidgetPublisher.publishFromManager(context, manager)
     } }
@@ -573,7 +570,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 refreshing = false
                 snapshot = manager.snapshot()
                 assistSession = manager.remoteAssistSession()
-                assistPreview = manager.remoteAssistPreview()
                 assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             }
         }, "okg-s1-task").start()
@@ -621,7 +617,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             }
             snapshot = manager.snapshot()
             assistSession = manager.remoteAssistSession()
-            assistPreview = manager.remoteAssistPreview()
             assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             GuardWidgetPublisher.publishFromManager(context, manager)
             backgroundListening = S1Runtime.isBackgroundListening()
@@ -873,26 +868,21 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         contentAlignment = Alignment.Center) {
                         if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
                             val videoSize = assistVideoSize
-                            if (videoSize != null && manager.remoteAssistVideoFresh()) {
+                            if (videoSize != null && manager.remoteAssistRtcFresh()) {
                                 BoxWithConstraints(Modifier.fillMaxSize(),
                                     contentAlignment = Alignment.Center) {
-                                    val ratio = videoSize.first.toFloat() / videoSize.second
+                                    val ratio = videoSize.first.toFloat() /
+                                        videoSize.second.coerceAtLeast(1)
                                     val displayWidth = minOf(maxWidth, maxHeight * ratio)
                                     val displayHeight = displayWidth / ratio
                                     AndroidView(factory = { ctx ->
-                                        SurfaceView(ctx).apply {
-                                            holder.addCallback(object : SurfaceHolder.Callback {
-                                                override fun surfaceCreated(holder: SurfaceHolder) {
-                                                    manager.attachRemoteVideoSurface(holder.surface)
-                                                }
-                                                override fun surfaceChanged(holder: SurfaceHolder,
-                                                    format: Int, width: Int, height: Int) = Unit
-                                                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                                    manager.attachRemoteVideoSurface(null)
-                                                }
-                                            })
+                                        org.webrtc.SurfaceViewRenderer(ctx).also {
+                                            manager.attachRemoteRtcRenderer(it)
                                         }
-                                    }, modifier = Modifier.width(displayWidth).height(displayHeight)
+                                    }, onRelease = { view ->
+                                        manager.detachRemoteRtcRenderer(view)
+                                    }, modifier = Modifier.width(displayWidth)
+                                        .height(displayHeight)
                                         .pointerInput(session.sessionId) {
                                             detectTapGestures { pos ->
                                                 runTask("远程点击") {
@@ -905,36 +895,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                             }
                                         })
                                 }
-                            } else {
-                            val preview = assistPreview
-                            val bitmap = remember(preview?.receivedAt) {
-                                preview?.let { BitmapFactory.decodeByteArray(it.jpeg, 0,
-                                    it.jpeg.size)?.asImageBitmap() }
-                            }
-                            if (preview != null && bitmap != null) {
-                                BoxWithConstraints(Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center) {
-                                    val ratio = preview.width.toFloat() /
-                                        preview.height.coerceAtLeast(1).toFloat()
-                                    val displayWidth = minOf(maxWidth, maxHeight * ratio)
-                                    val displayHeight = displayWidth / ratio
-                                    Image(bitmap = bitmap,
-                                        contentDescription = "已同意的远程手机画面，点击发送触摸",
-                                        contentScale = ContentScale.FillBounds,
-                                        modifier = Modifier.width(displayWidth).height(displayHeight)
-                                            .pointerInput(session.sessionId) {
-                                                detectTapGestures { pos ->
-                                                    runTask("远程点击") {
-                                                        manager.sendRemoteAssistTap(
-                                                            (pos.x / size.width * 10000).toInt().coerceIn(0, 10000),
-                                                            (pos.y / size.height * 10000).toInt().coerceIn(0, 10000))
-                                                    }
-                                                }
-                                            })
-                                }
-                            } else Text("等待第一帧画面。超过10秒请检查对方录屏授权及画面发送状态。",
+                            } else Text("WebRTC 正在建立加密视频连接。请稍后查看诊断中的 ICE 状态。",
                                 style = MaterialTheme.typography.bodySmall)
-                            }
                         } else Text("等待家人确认并开启屏幕共享…",
                             style = MaterialTheme.typography.bodyMedium)
                     }
@@ -1316,60 +1278,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         }, style = MaterialTheme.typography.bodySmall)
                                         if (session.direction == RemoteAssistConsent.Direction.OUTGOING &&
                                             session.phase == RemoteAssistConsent.Phase.ACTIVE) {
-                                            val preview = assistPreview
-                                            if (preview != null) {
-                                                val imageBitmap = remember(preview.receivedAt) {
-                                                    BitmapFactory.decodeByteArray(preview.jpeg, 0,
-                                                        preview.jpeg.size)?.asImageBitmap()
-                                                }
-                                                if (imageBitmap != null) {
-                                                    Text("实时协助画面 · 点击以模拟本人触摸",
-                                                        style = MaterialTheme.typography.labelMedium)
-                                                    Image(bitmap = imageBitmap,
-                                                        contentDescription = "已获授权的家人手机屏幕",
-                                                        modifier = Modifier.fillMaxWidth()
-                                                            .aspectRatio(preview.width.toFloat() /
-                                                                preview.height.toFloat())
-                                                            .pointerInput(session.sessionId) {
-                                                                detectTapGestures { pos ->
-                                                                    val normalizedX = (pos.x /
-                                                                        size.width * 10000).toInt()
-                                                                        .coerceIn(0, 10000)
-                                                                    val normalizedY = (pos.y /
-                                                                        size.height * 10000).toInt()
-                                                                        .coerceIn(0, 10000)
-                                                                    runTask("远程点击") {
-                                                                        manager.sendRemoteAssistTap(
-                                                                            normalizedX, normalizedY)
-                                                                    }
-                                                                }
-                                                            }, contentScale = ContentScale.FillBounds)
-                                                    Row(horizontalArrangement =
-                                                        Arrangement.spacedBy(8.dp)) {
-                                                        OutlinedButton(enabled = !busy,
-                                                            onClick = { runTask("远程返回") {
-                                                                manager.sendRemoteAssistBack()
-                                                            } }) { Text("返回") }
-                                                        OutlinedButton(enabled = !busy,
-                                                            onClick = { runTask("远程主页") {
-                                                                manager.sendRemoteAssistHome()
-                                                            } }) { Text("主页") }
-                                                    }
-                                                    Row(horizontalArrangement =
-                                                        Arrangement.spacedBy(8.dp)) {
-                                                        OutlinedButton(enabled = !busy,
-                                                            onClick = { runTask("远程上滑") {
-                                                                manager.sendRemoteAssistSwipe(
-                                                                    5000, 7800, 5000, 2600)
-                                                            } }) { Text("向上滑") }
-                                                        OutlinedButton(enabled = !busy,
-                                                            onClick = { runTask("远程下滑") {
-                                                                manager.sendRemoteAssistSwipe(
-                                                                    5000, 2600, 5000, 7800)
-                                                            } }) { Text("向下滑") }
-                                                    }
-                                                }
-                                            } else Text("连接中，等待下一帧屏幕画面…")
+                                            OutlinedButton(onClick = {
+                                                showAssistControllerPanel = true
+                                            }) { Text("打开 WebRTC 远程画面") }
                                         }
                                         TextButton(enabled = !busy, onClick = {
                                             runTask("结束远程协助") {
@@ -1380,7 +1291,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                     FeatureHelp("仅连接已经绑定的家人；必须由对方本人逐次同意，" +
                                         "并经安卓系统授权屏幕共享。远程操作还需对方手动开启辅助功能；" +
                                         "仅经局域网或已认证的 UDP P2P 传屏，不经公共节点转发。" +
-                                        "结束后立即撤销权限。画质为低码率实验版。")
+                                        "结束后立即撤销权限。视频由 WebRTC 加密点对点传输。")
                                     OutlinedButton(enabled = !busy && roleOnline(helperPeer),
                                         modifier = Modifier.fillMaxWidth(), onClick = {
                                         lastLocationRequestAt[device.fingerprint] =

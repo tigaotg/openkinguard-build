@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 59
-        versionName = "0.9.24-version-and-video-diagnostics"
+        versionCode = 60
+        versionName = "0.9.25-webrtc-p2p-video"
     }
 
     buildTypes {
@@ -167,6 +167,8 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.zxing:core:3.5.4")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // BSD-3-Clause WebRTC native SDK. Media never uses bespoke JPEG/TCP framing.
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")
     debugImplementation("androidx.compose.ui:ui-tooling")

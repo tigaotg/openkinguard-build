@@ -5,30 +5,23 @@ import java.util.Base64
 import java.util.UUID
 
 /**
- * Strict, signed, session-scoped packets carried by the existing direct transport.
- * A frame is intentionally capped to small JPEG fragments; there is no media relay.
- * This module does not know about SOS, location or the user's long-lived pairings.
+ * Strict, signed, consent-scoped WebRTC signaling and remote gestures.
+ * NO video frames, JPEG fragments, raw H.264 or captured pixels are serialized here.
  */
 object RemoteAssistStreamWire {
-    const val FRAME = "OKG_REMOTE_FRAME_V1"
+    const val RTC = "OKG_REMOTE_RTC_SIGNAL_V1"
     const val TAP = "OKG_REMOTE_TAP_V1"
     const val SWIPE = "OKG_REMOTE_SWIPE_V1"
     const val BACK = "OKG_REMOTE_BACK_V1"
     const val HOME = "OKG_REMOTE_HOME_V1"
     const val DIAGNOSTIC = "OKG_REMOTE_DIAG_V1"
     const val ACK = "OKG_REMOTE_STREAM_ACK_V1"
-    val requestKinds = setOf(FRAME, TAP, SWIPE, BACK, HOME, DIAGNOSTIC)
+    val requestKinds = setOf(RTC, TAP, SWIPE, BACK, HOME, DIAGNOSTIC)
     val kinds = requestKinds + ACK
 
     data class Packet(
         val relationId: String,
         val sessionId: String,
-        val frameId: String? = null,
-        val part: Int = 0,
-        val total: Int = 0,
-        val width: Int = 0,
-        val height: Int = 0,
-        val jpegPart: ByteArray = byteArrayOf(),
         val x: Int = 0,
         val y: Int = 0,
         val x2: Int = 0,
@@ -36,15 +29,20 @@ object RemoteAssistStreamWire {
         val durationMs: Int = 0,
         val respondsTo: String? = null,
         val diagnosticText: String = "",
+        val rtcType: String = "",
+        val rtcId: String = "",
+        val rtcPart: Int = 0,
+        val rtcTotal: Int = 0,
+        val rtcBytes: ByteArray = byteArrayOf(),
     )
 
-    fun frame(relationId: String, sessionId: String, frameId: String,
-              part: Int, total: Int, width: Int, height: Int, jpegPart: ByteArray): ByteArray {
-        require(part in 0 until total && total in 1..40)
-        require(width in 100..1500 && height in 100..3000)
-        require(jpegPart.size in 1..2300)
-        return "F|${uuid(relationId)}|${uuid(sessionId)}|${uuid(frameId)}|$part|$total|".plus(
-            "$width|$height|${Base64.getUrlEncoder().withoutPadding().encodeToString(jpegPart)}")
+    /** Chunks are signed individually and reassembled under the approved session. */
+    fun rtc(relationId: String, sessionId: String, type: String, id: String,
+            part: Int, total: Int, payload: ByteArray): ByteArray {
+        require(type in setOf("offer", "answer", "ice"))
+        require(total in 1..40 && part in 0 until total && payload.size in 1..950)
+        return ("R|${uuid(relationId)}|${uuid(sessionId)}|$type|${uuid(id)}|$part|$total|" +
+            Base64.getUrlEncoder().withoutPadding().encodeToString(payload))
             .toByteArray(Charsets.US_ASCII)
     }
 
@@ -72,57 +70,60 @@ object RemoteAssistStreamWire {
         "A|${uuid(relationId)}|${uuid(sessionId)}|${uuid(respondsTo)}"
             .toByteArray(Charsets.US_ASCII)
 
-    /** Encrypted-by-transport authenticated metadata, never screen pixels or device secrets. */
+    /** Aggregate performance telemetry; does not contain image, secrets or user messages. */
     fun diagnostic(relationId: String, sessionId: String, content: String): ByteArray {
         val utf8 = content.toByteArray(Charsets.UTF_8)
-        require(utf8.size in 1..1100) { "Diagnostic must be 1..1100 bytes" }
+        require(utf8.size in 1..1100)
         val data = Base64.getUrlEncoder().withoutPadding().encodeToString(utf8)
         return "D|${uuid(relationId)}|${uuid(sessionId)}|$data"
             .toByteArray(Charsets.US_ASCII)
     }
 
     fun decode(message: MessageEnvelope): Packet {
-        require(message.payloadKind in kinds) { "Unknown assistance packet" }
+        require(message.payloadKind in kinds) { "Unknown remote assist packet" }
         require(message.payload.size in 75..4300 &&
-            message.payload.all { it.toInt() in 32..126 }) { "Invalid assistance packet" }
+            message.payload.all { it.toInt() in 32..126 }) { "Invalid remote assist packet" }
         val parts = message.payload.toString(Charsets.US_ASCII).split('|')
         val expected = when (message.payloadKind) {
-            FRAME -> "F"; TAP -> "T"; SWIPE -> "W";
-            BACK -> "B"; HOME -> "H"; DIAGNOSTIC -> "D"; else -> "A"
+            RTC -> "R"; TAP -> "T"; SWIPE -> "W"; BACK -> "B"
+            HOME -> "H"; DIAGNOSTIC -> "D"; else -> "A"
         }
-        require(parts.firstOrNull() == expected) { "Assistance packet kind mismatch" }
+        require(parts.firstOrNull() == expected) { "Packet kind mismatch" }
         require(parts.size == when (message.payloadKind) {
-            FRAME -> 9; TAP -> 5; SWIPE -> 8; BACK, HOME -> 3; else -> 4
-        }) { "Invalid assistance packet fields" }
-        val relation = uuid(parts[1]); val session = uuid(parts[2])
+            RTC -> 8; TAP -> 5; SWIPE -> 8; BACK, HOME -> 3; else -> 4
+        }) { "Invalid packet fields" }
+        val relation = uuid(parts[1])
+        val session = uuid(parts[2])
         require(message.eventId.value == session) { "Session mismatch" }
         return when (message.payloadKind) {
-            FRAME -> {
-                val frame = uuid(parts[3]); val part = parts[4].toInt(); val total = parts[5].toInt()
-                val width = parts[6].toInt(); val height = parts[7].toInt()
+            RTC -> {
+                val type = parts[3].also { require(it in setOf("offer", "answer", "ice")) }
+                val id = uuid(parts[4])
+                val part = parts[5].toInt()
+                val total = parts[6].toInt()
                 require(total in 1..40 && part in 0 until total)
-                require(width in 100..1500 && height in 100..3000)
-                val bytes = Base64.getUrlDecoder().decode(parts[8])
-                require(bytes.size in 1..2300)
-                Packet(relation, session, frame, part, total, width, height, bytes)
+                val bytes = Base64.getUrlDecoder().decode(parts[7])
+                require(bytes.size in 1..950)
+                Packet(relation, session, rtcType = type, rtcId = id,
+                    rtcPart = part, rtcTotal = total, rtcBytes = bytes)
             }
             TAP -> Packet(relation, session, x = parts[3].toInt().also {
                 require(it in 0..10000)
             }, y = parts[4].toInt().also { require(it in 0..10000) })
             SWIPE -> {
-                val coordinates = parts.subList(3, 7).map { it.toInt().also { n ->
-                    require(n in 0..10000)
-                } }
+                val xy = parts.subList(3, 7).map {
+                    it.toInt().also { n -> require(n in 0..10000) }
+                }
                 val duration = parts[7].toInt().also { require(it in 120..1000) }
-                Packet(relation, session, x = coordinates[0], y = coordinates[1],
-                    x2 = coordinates[2], y2 = coordinates[3], durationMs = duration)
+                Packet(relation, session, x = xy[0], y = xy[1],
+                    x2 = xy[2], y2 = xy[3], durationMs = duration)
             }
             ACK -> Packet(relation, session, respondsTo = uuid(parts[3]))
             DIAGNOSTIC -> {
-                val data = Base64.getUrlDecoder().decode(parts[3])
-                require(data.size in 1..1100)
-                val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(data))
-                    .toString()
+                val bytes = Base64.getUrlDecoder().decode(parts[3])
+                require(bytes.size in 1..1100)
+                val text = Charsets.UTF_8.newDecoder()
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
                 Packet(relation, session, diagnosticText = text)
             }
             else -> Packet(relation, session)

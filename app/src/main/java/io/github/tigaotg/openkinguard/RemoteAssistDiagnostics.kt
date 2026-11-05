@@ -128,7 +128,7 @@ internal object RemoteAssistDiagnostics {
         event("非致命警告：$lastWarning")
     }
 
-    /** Explain WHY the high-FPS LAN transport was unavailable, even after JPEG starts. */
+    /** ICE / media startup diagnostics for this manually approved WebRTC session. */
     @Synchronized fun fallback(reason: String) {
         fallbackReason = reason.take(120)
         event("视频降级：$fallbackReason")
@@ -161,12 +161,10 @@ internal object RemoteAssistDiagnostics {
         return "被控制端版本: $appVersion\n被控制端: ${Build.MANUFACTURER} ${Build.MODEL}; " +
             "Android ${Build.VERSION.RELEASE}/API ${Build.VERSION.SDK_INT}\n" +
             "视频: $codec; 尺寸: $dimensions; 网络: $transport\n" +
-            "编码FPS(最近5秒): ${fps(encodedEvents, now)}\n" +
-            "发送FPS(最近5秒): ${fps(sentEvents, now)}\n" +
-            "累计发送: $sentFrames 帧 / $sentBytes 字节\n" +
-            "单次发送耗时: 平均$average, 最大${sendDurationMaxMs}ms\n" +
+            "已采集FPS(最近5秒): ${fps(encodedEvents, now)}\n" +
+            "WebRTC加密发送由SDK控制，逐包发送耗时未在应用层测量。\n" +
             "已丢弃: $droppedFrames; 状态: $status\n" +
-            "H.264降级原因: $fallbackReason\n" +
+            "WebRTC协商/降级: $fallbackReason\n" +
             "最近异常: $lastError; 非致命警告: $lastWarning"
     }
 
@@ -187,15 +185,14 @@ OpenKinGuard 远程协助诊断（本机）
 视频模式：$codec
 画面分辨率：$dimensions
 实时状态：$status
-H.264降级原因：$fallbackReason
+WebRTC协商/降级：$fallbackReason
 
 【最近5秒实际事件，不是目标帧率】
-编码输出：${fps(encodedEvents, now)} FPS
-网络发送：${fps(sentEvents, now)} FPS
-网络接收：${fps(receivedEvents, now)} FPS
+本机采集：${fps(encodedEvents, now)} FPS（采集回调，不等于编码或发送帧率）
+网络发送：WebRTC SDK 内部，未单独测量
+网络接收：${fps(receivedEvents, now)} FPS（解码画面回调）
 解码输出：${fps(decodedEvents, now)} FPS
-已发送帧 / 字节：$sentFrames / $sentBytes
-已接收帧 / 字节：$receivedFrames / $receivedBytes
+已接收并解码帧：$receivedFrames（字节数由WebRTC SDK处理）
 已显示解码帧：$decodedFrames
 已知丢弃帧：$droppedFrames
 解码队列：$currentQueue / 峰值 $peakQueue
@@ -206,9 +203,9 @@ H.264降级原因：$fallbackReason
 
 【测量边界】
 以上为本机实际计数；获得对方屏幕共享授权后控制端还会接收对方的简要编码状态。
-TCP 传输无按包丢失率统计；未实现独立 RTT 探针。
+WebRTC 使用 ICE / DTLS-SRTP；目前展示 ICE 连接状态，未读取底层丢包、RTT、码率统计。
 不同手机时钟没有校准，端到端单向延迟未测量，不能由时间戳直接推算。
-视频编码设置目标：约 720p / 30 FPS / 1.8 Mbps，实际值以计数为准。
+捕获请求目标：最长边1280、短边720、30 FPS。实际编码格式、帧率和码率由WebRTC自动适配。
 
 【事件】
 ${events.joinToString("\n")}

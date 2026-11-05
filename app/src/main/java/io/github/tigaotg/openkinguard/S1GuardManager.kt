@@ -73,14 +73,12 @@ class S1GuardManager(context: Context) {
         { forwardRelayInbound(it) }, { signal() }, { probeAsync() })
     // Isolated, in-memory consent state. No legacy alert, pairing or location data changes.
     private val remoteAssistConsent = RemoteAssistConsent()
-    private val remoteAssistFrames = RemoteAssistFrames()
-    private val remoteVideoFrames = RemoteAssistVideoFrames()
-    private val remoteVideoDecoder = RemoteAssistVideoDecoder()
+    @Volatile private var remoteRtc: RemoteAssistWebRtc? = null
+    @Volatile private var remoteRtcSessionId = ""
+    private val rtcSignalAssembler = RemoteAssistRtcSignalAssembler()
     @Volatile private var remotePeerDiagnosticSession = ""
     @Volatile private var remotePeerDiagnostics = ""
     @Volatile private var remotePeerDiagnosticAt = 0L
-    @Volatile private var remoteVideoSender: Socket? = null
-    private val remoteVideoSequence = AtomicLong(0)
     private val remoteStreamSequence = AtomicLong(0)
     private val remoteStreamReplay = ConcurrentHashMap<String, ReplayWindow>()
     private val relayVerifiedAt = ConcurrentHashMap<String, Long>()
@@ -187,164 +185,115 @@ class S1GuardManager(context: Context) {
     /** Session authorization is volatile and independent of all SOS/pairing state. */
     internal fun remoteAssistSession(): RemoteAssistConsent.Session? = remoteAssistConsent.snapshot()
 
-    internal fun remoteAssistPreview(): RemoteAssistFrames.Preview? = remoteAssistFrames.latest()
+    internal fun remoteAssistRtcSize(): Pair<Int, Int>? = remoteRtc?.videoSize()
+    internal fun remoteAssistRtcFresh(): Boolean = remoteRtc?.fresh() == true
 
-    internal fun remoteAssistVideoSize(): Pair<Int, Int>? = remoteVideoFrames.size()
-    internal fun remoteAssistVideoFresh(): Boolean = remoteVideoFrames.fresh()
     internal fun remoteAssistDiagnosticReport(): String {
         val session = remoteAssistConsent.snapshot()
         val matching = session != null && session.sessionId == remotePeerDiagnosticSession
-        val peer = if (matching) remotePeerDiagnostics else ""
         val age = if (remotePeerDiagnosticAt == 0L || !matching) "尚未收到" else
             "${(System.currentTimeMillis() - remotePeerDiagnosticAt) / 1000}秒前"
         return RemoteAssistDiagnostics.report(AppVersionInfo.name(app)) +
-            "\n\n【控制端详细接收/解码计数】\n" +
-            remoteVideoFrames.diagnostics() + "\n" +
-            "\n" + remoteAssistFrames.diagnostics() +
-            "\n\n【被控制端自动回传（$age）】\n" +
-            peer.ifBlank { "尚未收到。双方保持共享10秒后点刷新；网络可能阻止了诊断回传。" }
+            "\n\n【视频传输】\n使用开源 WebRTC 的 ICE + DTLS/SRTP；" +
+            "音频已禁用，流媒体不经过 SOS/绑定信令服务。\n" +
+            "\n【被控制端自动回传（$age）】\n" +
+            (if (matching) remotePeerDiagnostics else "").ifBlank {
+                "尚未收到。共享开始10秒后点刷新，或查看被控制端诊断。"
+            }
     }
 
-    /** Independent, signed, LAN/P2P-only telemetry for the live approved session. */
-    internal fun sendRemoteAssistDiagnostic(sessionId: String, text: String) {
-        require(authorizedRemoteControl(sessionId)) { "本次共享已结束" }
+    internal fun sendRemoteAssistDiagnostic(sessionId: String, report: String) {
+        require(authorizedRemoteControl(sessionId)) { "屏幕共享已结束" }
         val session = requireNotNull(remoteAssistConsent.snapshot())
         val peer = relations().singleOrNull { it.active &&
             it.relationId == session.relationId &&
             it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
-            ?: throw IllegalStateException("被授权的家人关系已失效")
+            ?: error("帮助关系已失效")
         sendRemoteAssistPacket(peer, RemoteAssistStreamWire.DIAGNOSTIC, sessionId,
-            RemoteAssistStreamWire.diagnostic(peer.relationId, sessionId, text))
+            RemoteAssistStreamWire.diagnostic(peer.relationId, sessionId, report))
     }
-    internal fun attachRemoteVideoSurface(surface: android.view.Surface?) {
-        if (surface == null) remoteVideoDecoder.detach()
-        else remoteVideoDecoder.attach(surface, remoteVideoFrames.config())
+
+    private fun sendRtcSignal(sessionId: String, type: String, text: String) {
+        val session = remoteAssistConsent.snapshot()
+        require(session?.sessionId == sessionId &&
+            session.phase in setOf(RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
+                RemoteAssistConsent.Phase.ACTIVE)) { "当前授权已失效" }
+        val peer = relations().singleOrNull { it.active &&
+            it.relationId == session.relationId &&
+            it.peerFingerprint == session.peerFingerprint } ?: error("帮助关系不存在")
+        val content = text.toByteArray(Charsets.UTF_8)
+        require(content.size in 1..38_000)
+        val parts = content.asList().chunked(900)
+        require(parts.size in 1..40)
+        val signalId = UUID.randomUUID().toString()
+        for ((index, part) in parts.withIndex()) {
+            require(remoteAssistConsent.snapshot()?.sessionId == sessionId)
+            val payload = RemoteAssistStreamWire.rtc(peer.relationId, sessionId,
+                type, signalId, index, parts.size, part.toByteArray())
+            sendRemoteAssistPacket(peer, RemoteAssistStreamWire.RTC, sessionId, payload)
+        }
+    }
+
+    /** Engine is recreated for every explicitly approved session; no unattended restart. */
+    @Synchronized private fun rtcFor(sessionId: String): RemoteAssistWebRtc {
+        if (remoteRtcSessionId == sessionId) remoteRtc?.let { return it }
+        remoteRtc?.close()
+        rtcSignalAssembler.clear()
+        remoteRtcSessionId = sessionId
+        val rtc = RemoteAssistWebRtc(app, sessionId,
+            allowed = {
+                remoteAssistConsent.snapshot()?.let {
+                    it.sessionId == sessionId && it.phase in
+                        setOf(RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
+                            RemoteAssistConsent.Phase.ACTIVE)
+                } == true
+            },
+            sendSignal = { type, body -> sendRtcSignal(sessionId, type, body) },
+            onFirstFrame = {
+                remoteAssistConsent.remotePreviewStarted(sessionId)
+                signal()
+            },
+            onCaptureRevoked = {
+                app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
+                Thread({ runCatching { stopRemoteAssist() } },
+                    "okg-rtc-revoke").start()
+            },
+            onStatus = { state ->
+                RemoteAssistProjectionService.setTransferStatus(state)
+                signal()
+            })
+        remoteRtc = rtc
+        return rtc
     }
 
     internal fun screenShareStarted(sessionId: String): Boolean =
         remoteAssistConsent.screenStarted(sessionId).also { if (it) signal() }
 
-    /** This check runs for every frame and gesture, not just when a session starts. */
     internal fun authorizedRemoteControl(sessionId: String): Boolean =
         remoteAssistConsent.snapshot()?.let { it.sessionId == sessionId &&
             it.direction == RemoteAssistConsent.Direction.INCOMING &&
             it.phase == RemoteAssistConsent.Phase.ACTIVE } == true
 
-    /** Only a LAN session gets the persistent high-FPS media socket. P2P signaling is unchanged. */
-    @Synchronized internal fun openRemoteAssistVideo(sessionId: String): Boolean {
-        require(authorizedRemoteControl(sessionId)) { "本次共享尚未授权" }
-        val session = requireNotNull(remoteAssistConsent.snapshot())
-        val peer = relations().singleOrNull { it.relationId == session.relationId &&
-            it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
-            ?: run {
-                RemoteAssistDiagnostics.fallback("缺少当前有效的被控制设备帮助关系")
-                return false
-            }
-        val node = verified[peer.relationId]?.let { nodes[it] } ?: run {
-            RemoteAssistDiagnostics.fallback(
-                "缺少已经验签的局域网IPv4端点，可能只有UDP P2P可用；请检查两机Wi-Fi与局域网发现")
-            RemoteAssistDiagnostics.connection("H.264 局域网 TCP 未建立")
-            return false
-        }
-        RemoteAssistDiagnostics.connection("局域网 TCP / 端口 " + node.port)
-        closeRemoteAssistVideo()
-        val socket = Socket()
-        try {
-            socket.tcpNoDelay = true
-            socket.connect(InetSocketAddress(node.address, node.port), 1800)
-            socket.soTimeout = 4000
-            val open = signedRemoteStreamPacket(peer, RemoteAssistVideoWire.OPEN,
-                sessionId, RemoteAssistVideoWire.open(peer.relationId, sessionId))
-            writePacket(socket, LanTestWire.encode(open))
-            val reply = LanTestWire.decode(readPacket(socket))
-            require(reply.message.payloadKind == RemoteAssistVideoWire.ACK)
-            val packet = RemoteAssistVideoWire.decode(reply.message)
-            require(packet.relationId == peer.relationId && packet.sessionId == sessionId &&
-                packet.respondsTo == open.message.messageId.value &&
-                admitRemoteStream(reply, peer, sessionId)) { "远程视频签名握手失败" }
-            socket.soTimeout = 0
-            remoteVideoSender = socket
-            RemoteAssistDiagnostics.state("H.264 直连认证成功")
-            return true
-        } catch (failure: Exception) {
-            RemoteAssistDiagnostics.error("视频连接-" + failure.javaClass.simpleName)
-            RemoteAssistDiagnostics.fallback("局域网 TCP / 签名握手失败：" +
-                failure.javaClass.simpleName)
-            runCatching { socket.close() }
-            throw failure
-        }
+    internal fun startRemoteRtcScreen(sessionId: String, resultData: Intent,
+                                      width: Int, height: Int) {
+        require(authorizedRemoteControl(sessionId)) { "未获得本次屏幕授权" }
+        rtcFor(sessionId).startPublisher(resultData, width, height)
     }
 
-    /** One signed digest per encoded access unit; its binary bytes follow on the SAME socket. */
-    @Synchronized internal fun sendRemoteAssistVideoUnit(sessionId: String,
-        width: Int, height: Int, presentationUs: Long, flags: Int, bytes: ByteArray) {
-        require(authorizedRemoteControl(sessionId)) { "本次共享已结束" }
-        require(bytes.size in 1..RemoteAssistVideoWire.MAX_UNIT_BYTES)
-        val session = requireNotNull(remoteAssistConsent.snapshot())
-        val peer = relations().singleOrNull { it.relationId == session.relationId &&
-            it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
-            ?: throw IllegalStateException("帮助关系已撤销")
-        val socket = remoteVideoSender ?: throw java.io.IOException("视频直连已断开")
-        val id = remoteVideoSequence.incrementAndGet()
-        val startNs = System.nanoTime()
-        try {
-            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
-                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-            val payload = RemoteAssistVideoWire.unit(peer.relationId, sessionId, id,
-                width, height, presentationUs, flags, bytes.size, digest)
-            val signed = signedRemoteStreamPacket(peer, RemoteAssistVideoWire.UNIT,
-                sessionId, payload)
-            writePacket(socket, LanTestWire.encode(signed))
-            DataOutputStream(socket.getOutputStream()).apply {
-                writeInt(bytes.size)
-                write(bytes)
-                flush()
-            }
-            if (flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                RemoteAssistDiagnostics.onSent(bytes.size,
-                    (System.nanoTime() - startNs) / 1_000_000)
-            }
-        } catch (failure: Exception) {
-            RemoteAssistDiagnostics.error("视频发送-" + failure.javaClass.simpleName)
-            closeRemoteAssistVideo()
-            throw failure
-        }
+    internal fun attachRemoteRtcRenderer(renderer: org.webrtc.SurfaceViewRenderer) {
+        remoteRtc?.attachRenderer(renderer)
     }
 
-    @Synchronized internal fun closeRemoteAssistVideo() {
-        val previous = remoteVideoSender
-        remoteVideoSender = null
-        runCatching { previous?.close() }
+    internal fun detachRemoteRtcRenderer(renderer: org.webrtc.SurfaceViewRenderer) {
+        val rtc = remoteRtc
+        if (rtc != null) rtc.detachRenderer(renderer) else renderer.release()
     }
 
-    /** Image fragments: directly authenticated LAN/UDP only, never a relay's message queue. */
-    internal fun sendRemoteAssistFrame(sessionId: String, width: Int, height: Int,
-                                       jpeg: ByteArray) {
-        val session = remoteAssistConsent.snapshot()
-            ?: throw IllegalStateException("协助已结束")
-        require(session.sessionId == sessionId &&
-            session.direction == RemoteAssistConsent.Direction.INCOMING &&
-            session.phase == RemoteAssistConsent.Phase.ACTIVE) { "没有当前屏幕共享权限" }
-        require(jpeg.size in 100..75_000) { "JPEG 超出屏幕协助限额" }
-        val peer = relations().singleOrNull { it.active && it.relationId == session.relationId &&
-            it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
-            ?: throw IllegalStateException("原有帮助关系已撤销")
-        val frameId = UUID.randomUUID().toString()
-        RemoteAssistDiagnostics.mode("兼容 JPEG，约 1 FPS")
-        RemoteAssistDiagnostics.connection("旧版逐帧签名 / 局域网或P2P")
-        RemoteAssistDiagnostics.size(width, height)
-        val startNs = System.nanoTime()
-        val parts = jpeg.asList().chunked(2000)
-        require(parts.size in 1..40)
-        for ((index, data) in parts.withIndex()) {
-            require(authorizedRemoteControl(sessionId)) { "协助已停止" }
-            sendRemoteAssistPacket(peer, RemoteAssistStreamWire.FRAME, sessionId,
-                RemoteAssistStreamWire.frame(peer.relationId, sessionId, frameId,
-                    index, parts.size, width, height, data.toByteArray()))
-        }
-        RemoteAssistDiagnostics.onEncoded()
-        RemoteAssistDiagnostics.onSent(jpeg.size,
-            (System.nanoTime() - startNs) / 1_000_000)
+    @Synchronized private fun closeRemoteRtc() {
+        remoteRtc?.close()
+        remoteRtc = null
+        remoteRtcSessionId = ""
+        rtcSignalAssembler.clear()
     }
 
     fun sendRemoteAssistTap(x: Int, y: Int): String = sendRemoteAssistGesture(
@@ -362,7 +311,7 @@ class S1GuardManager(context: Context) {
             ?: throw IllegalStateException("远程协助会话已结束")
         require(session.direction == RemoteAssistConsent.Direction.OUTGOING &&
             session.phase == RemoteAssistConsent.Phase.ACTIVE &&
-            (remoteAssistFrames.latest() != null || remoteVideoFrames.fresh())) {
+            remoteAssistRtcFresh()) {
             "必须等对方开启屏幕共享"
         }
         val peer = relations().singleOrNull { it.active && it.relationId == session.relationId &&
@@ -492,10 +441,7 @@ class S1GuardManager(context: Context) {
         remotePeerDiagnostics = ""
         remotePeerDiagnosticSession = ""
         RemoteAssistDiagnostics.finish()
-        remoteAssistFrames.clear()
-        remoteVideoFrames.clear()
-        remoteVideoDecoder.detach()
-        closeRemoteAssistVideo()
+        closeRemoteRtc()
         remoteStreamReplay.clear()
         if (session.direction == RemoteAssistConsent.Direction.INCOMING) {
             app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
@@ -1536,10 +1482,7 @@ class S1GuardManager(context: Context) {
 
     @Synchronized fun stop() {
         remoteAssistConsent.clear()
-        remoteAssistFrames.clear()
-        remoteVideoFrames.clear()
-        remoteVideoDecoder.detach()
-        closeRemoteAssistVideo()
+        closeRemoteRtc()
         remoteStreamReplay.clear()
         app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
         direct.stop()
@@ -2144,8 +2087,7 @@ class S1GuardManager(context: Context) {
         require(msg.payloadKind == LanTestWire.PING || msg.payloadKind in S1CaseWire.requestKinds ||
             msg.payloadKind == S3LocationWire.REQUEST ||
             msg.payloadKind in RemoteAssistWire.requestKinds ||
-            msg.payloadKind in RemoteAssistStreamWire.requestKinds ||
-            msg.payloadKind == RemoteAssistVideoWire.OPEN) {
+            msg.payloadKind in RemoteAssistStreamWire.requestKinds) {
             "Unsolicited response"
         }
         val body = when (msg.payloadKind) {
@@ -2153,7 +2095,6 @@ class S1GuardManager(context: Context) {
             S3LocationWire.REQUEST -> S3LocationWire.body(msg).relationId
             in RemoteAssistWire.requestKinds -> RemoteAssistWire.body(msg).relationId
             in RemoteAssistStreamWire.requestKinds -> RemoteAssistStreamWire.decode(msg).relationId
-            RemoteAssistVideoWire.OPEN -> RemoteAssistVideoWire.decode(msg).relationId
             else -> S1CaseWire.body(msg).relationId
         }
         val peer = pairings.snapshot().peers.singleOrNull { it.active &&
@@ -2170,10 +2111,6 @@ class S1GuardManager(context: Context) {
         }
         if (msg.payloadKind in RemoteAssistStreamWire.requestKinds) {
             handleRemoteAssistStream(socket, signed, peer, own)
-            return
-        }
-        if (msg.payloadKind == RemoteAssistVideoWire.OPEN) {
-            handleRemoteAssistVideoStream(socket, signed, peer)
             return
         }
         var freshlyReceivedSos = false
@@ -2406,10 +2343,7 @@ class S1GuardManager(context: Context) {
                     peer.relationId, peer.peerFingerprint, body.sessionId)
                 if (accepted && previous != null && previous.sessionId != body.sessionId) {
                     // An old projection must not survive a newly requested session.
-                    remoteAssistFrames.clear()
-                    remoteVideoFrames.clear()
-                    remoteVideoDecoder.detach()
-                    closeRemoteAssistVideo()
+                    closeRemoteRtc()
                     remoteStreamReplay.clear()
                     app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
                 }
@@ -2422,10 +2356,7 @@ class S1GuardManager(context: Context) {
                 peer.peerFingerprint, body.sessionId, false)
             RemoteAssistWire.STOP -> if (remoteAssistConsent.stop(peer.relationId,
                     peer.peerFingerprint, body.sessionId)) {
-                remoteAssistFrames.clear()
-                remoteVideoFrames.clear()
-                remoteVideoDecoder.detach()
-                closeRemoteAssistVideo()
+                closeRemoteRtc()
                 remoteStreamReplay.clear()
                 app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
             }
@@ -2442,36 +2373,36 @@ class S1GuardManager(context: Context) {
                                          peer: SavedPeer, own: String) {
         val msg = signed.message
         val packet = RemoteAssistStreamWire.decode(msg)
-        val incomingFrame = msg.payloadKind in setOf(RemoteAssistStreamWire.FRAME,
-            RemoteAssistStreamWire.DIAGNOSTIC)
-        require(peer.role == (if (incomingFrame) PairingRole.HELPER else PairingRole.SUBJECT)) {
+        val fromSubject = msg.payloadKind == RemoteAssistStreamWire.DIAGNOSTIC
+        val rtcSignal = msg.payloadKind == RemoteAssistStreamWire.RTC
+        if (!rtcSignal) require(peer.role ==
+            (if (fromSubject) PairingRole.HELPER else PairingRole.SUBJECT)) {
             "远程协助发送者的家人角色错误"
         }
         val session = remoteAssistConsent.snapshot()
         require(session != null && session.relationId == packet.relationId &&
             session.peerFingerprint == peer.peerFingerprint &&
             session.sessionId == packet.sessionId &&
-            (if (incomingFrame) session.direction == RemoteAssistConsent.Direction.OUTGOING &&
+            (if (fromSubject) session.direction == RemoteAssistConsent.Direction.OUTGOING &&
                 session.phase in setOf(RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
                     RemoteAssistConsent.Phase.ACTIVE)
-            else session.direction == RemoteAssistConsent.Direction.INCOMING &&
+            else if (rtcSignal) {
+                (session.direction == RemoteAssistConsent.Direction.OUTGOING &&
+                    session.phase in setOf(RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
+                        RemoteAssistConsent.Phase.ACTIVE)) ||
+                (session.direction == RemoteAssistConsent.Direction.INCOMING &&
+                    session.phase == RemoteAssistConsent.Phase.ACTIVE)
+            } else session.direction == RemoteAssistConsent.Direction.INCOMING &&
                 session.phase == RemoteAssistConsent.Phase.ACTIVE)) {
             "本次远程协助未经授权或已经结束"
         }
         val fresh = admitRemoteStream(signed, peer, packet.sessionId)
         if (fresh) {
             when (msg.payloadKind) {
-                RemoteAssistStreamWire.FRAME -> {
-                    if (remoteAssistFrames.accept(packet)) {
-                        remoteAssistFrames.latest()?.let { preview ->
-                            RemoteAssistDiagnostics.mode("兼容 JPEG 接收")
-                            RemoteAssistDiagnostics.connection("兼容图片经已验签直连接收（LAN或UDP P2P）")
-                            RemoteAssistDiagnostics.size(preview.width, preview.height)
-                            RemoteAssistDiagnostics.onReceived(preview.jpeg.size)
-                        }
-                        remoteAssistConsent.remotePreviewStarted(packet.sessionId)
-                        signal()
-                    }
+                RemoteAssistStreamWire.RTC -> {
+                    val complete = rtcSignalAssembler.accept(packet)
+                    if (complete != null) rtcFor(packet.sessionId)
+                        .receive(complete.type, complete.text)
                 }
                 RemoteAssistStreamWire.DIAGNOSTIC -> {
                     remotePeerDiagnosticSession = packet.sessionId
@@ -2495,56 +2426,6 @@ class S1GuardManager(context: Context) {
         val ack = signedRemoteStreamPacket(peer, RemoteAssistStreamWire.ACK, packet.sessionId,
             RemoteAssistStreamWire.ack(peer.relationId, packet.sessionId, msg.messageId.value))
         writePacket(socket, LanTestWire.encode(ack))
-    }
-
-    /** A media socket occupies one bounded inbound worker only during a consented LAN stream. */
-    private fun handleRemoteAssistVideoStream(socket: Socket, opening: SignedEnvelope,
-                                              peer: SavedPeer) {
-        require(peer.role == PairingRole.HELPER) { "视频来源不是本人已绑定的被协助者" }
-        val open = RemoteAssistVideoWire.decode(opening.message)
-        fun currentSession(): Boolean = remoteAssistConsent.snapshot()?.let {
-            it.relationId == open.relationId && it.peerFingerprint == peer.peerFingerprint &&
-                it.sessionId == open.sessionId &&
-                it.direction == RemoteAssistConsent.Direction.OUTGOING &&
-                it.phase in setOf(RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
-                    RemoteAssistConsent.Phase.ACTIVE)
-        } == true
-        require(currentSession() && admitRemoteStream(opening, peer, open.sessionId)) {
-            "视频连接没有当前有效的本人授权"
-        }
-        val ack = signedRemoteStreamPacket(peer, RemoteAssistVideoWire.ACK, open.sessionId,
-            RemoteAssistVideoWire.ack(open.relationId, open.sessionId,
-                opening.message.messageId.value))
-        writePacket(socket, LanTestWire.encode(ack))
-        RemoteAssistDiagnostics.connection("局域网 TCP / 端口 " + socket.localPort)
-        RemoteAssistDiagnostics.state("控制端已经接收视频流")
-        socket.soTimeout = 10_000
-        var lastSignaledAt = 0L
-        while (currentSession()) {
-            val raw = try { readPacket(socket) }
-                catch (_: java.net.SocketTimeoutException) { continue }
-                catch (_: java.io.IOException) { break }
-            val signed = LanTestWire.decode(raw)
-            require(signed.message.payloadKind == RemoteAssistVideoWire.UNIT)
-            val data = RemoteAssistVideoWire.decode(signed.message)
-            require(data.relationId == open.relationId && data.sessionId == open.sessionId &&
-                signed.message.senderDeviceId.value == "okg-${peer.peerFingerprint}")
-            if (!admitRemoteStream(signed, peer, open.sessionId)) break
-            val input = DataInputStream(socket.getInputStream())
-            val length = input.readInt()
-            require(length == data.length && length in 1..RemoteAssistVideoWire.MAX_UNIT_BYTES)
-            val bytes = ByteArray(length).also(input::readFully)
-            val unit = remoteVideoFrames.accept(data, bytes)
-                ?: throw IllegalArgumentException("视频流 SHA-256 验证失败")
-            if (unit.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0)
-                RemoteAssistDiagnostics.onReceived(bytes.size)
-            if (unit.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                remoteAssistConsent.remotePreviewStarted(open.sessionId)
-            }
-            remoteVideoDecoder.offer(unit)
-            val now = System.currentTimeMillis()
-            if (now - lastSignaledAt >= 250) { signal(); lastSignaledAt = now }
-        }
     }
 
     private fun verifyReply(reply: SignedEnvelope, peer: SavedPeer, requestKind: String,
