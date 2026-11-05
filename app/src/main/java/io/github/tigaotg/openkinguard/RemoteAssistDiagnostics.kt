@@ -136,6 +136,21 @@ internal object RemoteAssistDiagnostics {
         return String.format(Locale.US, "%.1f", buffer.size * 1000.0 / observed)
     }
 
+    /** Bounded performance-only summary for the approved family controller. */
+    @Synchronized fun peerSummary(): String {
+        val now = SystemClock.elapsedRealtime()
+        val average = if (sendCalls == 0L) "暂无" else
+            "${sendDurationTotalMs / sendCalls}ms"
+        return "被控制端: ${Build.MANUFACTURER} ${Build.MODEL}; " +
+            "Android ${Build.VERSION.RELEASE}/API ${Build.VERSION.SDK_INT}\n" +
+            "视频: $codec; 尺寸: $dimensions; 网络: $transport\n" +
+            "编码FPS(最近5秒): ${fps(encodedEvents, now)}\n" +
+            "发送FPS(最近5秒): ${fps(sentEvents, now)}\n" +
+            "累计发送: $sentFrames 帧 / $sentBytes 字节\n" +
+            "单次发送耗时: 平均$average, 最大${sendDurationMaxMs}ms\n" +
+            "已丢弃: $droppedFrames; 状态: $status\n最近异常: $lastError"
+    }
+
     @Synchronized fun report(): String {
         val now = SystemClock.elapsedRealtime()
         val age = if (lastVideoAt == 0L) "未收到视频事件"
@@ -169,7 +184,7 @@ OpenKinGuard 远程协助诊断（本机）
 最近异常：$lastError
 
 【测量边界】
-以上为本机实际计数；控制端不会自动获得荣耀端编码数据。
+以上为本机实际计数；获得对方屏幕共享授权后控制端还会接收对方的简要编码状态。
 TCP 传输无按包丢失率统计；未实现独立 RTT 探针。
 不同手机时钟没有校准，端到端单向延迟未测量，不能由时间戳直接推算。
 视频编码设置目标：约 720p / 30 FPS / 1.8 Mbps，实际值以计数为准。

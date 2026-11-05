@@ -76,6 +76,9 @@ class S1GuardManager(context: Context) {
     private val remoteAssistFrames = RemoteAssistFrames()
     private val remoteVideoFrames = RemoteAssistVideoFrames()
     private val remoteVideoDecoder = RemoteAssistVideoDecoder()
+    @Volatile private var remotePeerDiagnosticSession = ""
+    @Volatile private var remotePeerDiagnostics = ""
+    @Volatile private var remotePeerDiagnosticAt = 0L
     @Volatile private var remoteVideoSender: Socket? = null
     private val remoteVideoSequence = AtomicLong(0)
     private val remoteStreamSequence = AtomicLong(0)
@@ -188,6 +191,31 @@ class S1GuardManager(context: Context) {
 
     internal fun remoteAssistVideoSize(): Pair<Int, Int>? = remoteVideoFrames.size()
     internal fun remoteAssistVideoFresh(): Boolean = remoteVideoFrames.fresh()
+    internal fun remoteAssistDiagnosticReport(): String {
+        val session = remoteAssistConsent.snapshot()
+        val matching = session != null && session.sessionId == remotePeerDiagnosticSession
+        val peer = if (matching) remotePeerDiagnostics else ""
+        val age = if (remotePeerDiagnosticAt == 0L || !matching) "尚未收到" else
+            "${(System.currentTimeMillis() - remotePeerDiagnosticAt) / 1000}秒前"
+        return RemoteAssistDiagnostics.report() +
+            "\n\n【控制端详细接收/解码计数】\n" +
+            remoteVideoFrames.diagnostics() + "\n" +
+            "\n" + remoteAssistFrames.diagnostics() +
+            "\n\n【被控制端自动回传（$age）】\n" +
+            peer.ifBlank { "尚未收到。双方保持共享10秒后点刷新；网络可能阻止了诊断回传。" }
+    }
+
+    /** Independent, signed, LAN/P2P-only telemetry for the live approved session. */
+    internal fun sendRemoteAssistDiagnostic(sessionId: String, text: String) {
+        require(authorizedRemoteControl(sessionId)) { "本次共享已结束" }
+        val session = requireNotNull(remoteAssistConsent.snapshot())
+        val peer = relations().singleOrNull { it.active &&
+            it.relationId == session.relationId &&
+            it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
+            ?: throw IllegalStateException("被授权的家人关系已失效")
+        sendRemoteAssistPacket(peer, RemoteAssistStreamWire.DIAGNOSTIC, sessionId,
+            RemoteAssistStreamWire.diagnostic(peer.relationId, sessionId, text))
+    }
     internal fun attachRemoteVideoSurface(surface: android.view.Surface?) {
         if (surface == null) remoteVideoDecoder.detach()
         else remoteVideoDecoder.attach(surface, remoteVideoFrames.config())
@@ -406,6 +434,9 @@ class S1GuardManager(context: Context) {
             it.relationId == relationId && it.role == PairingRole.HELPER
         } ?: throw IllegalArgumentException("只能向已绑定的被帮助者申请远程协助")
         val session = remoteAssistConsent.request(relationId, peer.peerFingerprint)
+        remotePeerDiagnosticSession = session.sessionId
+        remotePeerDiagnostics = ""
+        remotePeerDiagnosticAt = 0L
         RemoteAssistDiagnostics.begin("控制端")
         return try {
             sendRemoteAssistControl(peer, RemoteAssistWire.REQUEST, session.sessionId)
@@ -448,6 +479,8 @@ class S1GuardManager(context: Context) {
     fun stopRemoteAssist(): String {
         val session = remoteAssistConsent.snapshot() ?: return "当前没有远程协助会话"
         remoteAssistConsent.clear() // Local revoke must not depend on network availability.
+        remotePeerDiagnostics = ""
+        remotePeerDiagnosticSession = ""
         RemoteAssistDiagnostics.finish()
         remoteAssistFrames.clear()
         remoteVideoFrames.clear()
@@ -2399,7 +2432,8 @@ class S1GuardManager(context: Context) {
                                          peer: SavedPeer, own: String) {
         val msg = signed.message
         val packet = RemoteAssistStreamWire.decode(msg)
-        val incomingFrame = msg.payloadKind == RemoteAssistStreamWire.FRAME
+        val incomingFrame = msg.payloadKind in setOf(RemoteAssistStreamWire.FRAME,
+            RemoteAssistStreamWire.DIAGNOSTIC)
         require(peer.role == (if (incomingFrame) PairingRole.HELPER else PairingRole.SUBJECT)) {
             "远程协助发送者的家人角色错误"
         }
@@ -2422,6 +2456,12 @@ class S1GuardManager(context: Context) {
                         remoteAssistConsent.remotePreviewStarted(packet.sessionId)
                         signal()
                     }
+                }
+                RemoteAssistStreamWire.DIAGNOSTIC -> {
+                    remotePeerDiagnosticSession = packet.sessionId
+                    remotePeerDiagnostics = packet.diagnosticText.take(1100)
+                    remotePeerDiagnosticAt = System.currentTimeMillis()
+                    signal()
                 }
                 RemoteAssistStreamWire.TAP -> RemoteAssistGestureService.tap(
                     packet.sessionId, packet.x, packet.y) {

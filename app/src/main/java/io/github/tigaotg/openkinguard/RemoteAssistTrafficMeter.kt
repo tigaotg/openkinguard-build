@@ -1,6 +1,5 @@
 package io.github.tigaotg.openkinguard
 
-import android.os.SystemClock
 import java.util.ArrayDeque
 
 /** Short-lived, aggregate traffic counters. No image bytes, identifiers or addresses retained. */
@@ -11,7 +10,7 @@ internal class RemoteAssistTrafficMeter {
     private var lastAt = 0L
 
     @Synchronized fun record(bytes: Int = 0) {
-        val now = SystemClock.elapsedRealtime()
+        val now = System.currentTimeMillis()
         count++
         totalBytes += bytes.coerceAtLeast(0)
         lastAt = now
@@ -20,7 +19,7 @@ internal class RemoteAssistTrafficMeter {
     }
 
     @Synchronized fun summary(): String {
-        val now = SystemClock.elapsedRealtime()
+        val now = System.currentTimeMillis()
         trim(now)
         val bytes = samples.sumOf { it.second.toLong() }
         val age = if (lastAt == 0L) "尚无数据" else "${now - lastAt}ms"

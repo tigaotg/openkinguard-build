@@ -39,6 +39,9 @@ class RemoteAssistProjectionService : Service() {
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "okg-assist-jpeg").apply { isDaemon = true }
     }
+    private val diagnosticWorker = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "okg-assist-diagnostic").apply { isDaemon = true }
+    }
     private val sending = AtomicBoolean(false)
     private val closing = AtomicBoolean(false)
     private var lastFrameAt = 0L
@@ -51,6 +54,23 @@ class RemoteAssistProjectionService : Service() {
                 !S1Runtime.manager(applicationContext).authorizedRemoteControl(sessionId)) {
                 requestStop()
             } else main.postDelayed(this, 5_000L)
+        }
+    }
+    private val diagnosticTicker = object : Runnable {
+        override fun run() {
+            if (closing.get() || sessionId.isBlank()) return
+            val id = sessionId
+            val report = RemoteAssistDiagnostics.peerSummary()
+            runCatching {
+                diagnosticWorker.execute {
+                    runCatching {
+                        S1Runtime.manager(applicationContext).sendRemoteAssistDiagnostic(id, report)
+                    }.onFailure {
+                        RemoteAssistDiagnostics.error("诊断回传-" + it.javaClass.simpleName)
+                    }
+                }
+            }
+            main.postDelayed(this, 8_000L)
         }
     }
 
@@ -207,6 +227,7 @@ class RemoteAssistProjectionService : Service() {
                 width, height, dpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 requireNotNull(reader).surface, null, handler)
             }
+            main.postDelayed(diagnosticTicker, 5_000L)
         } catch (error: Exception) {
             RemoteAssistDiagnostics.error("录屏启动-" + error.javaClass.simpleName)
             transferStatus = "屏幕捕获启动失败：${error.javaClass.simpleName}"
@@ -233,6 +254,7 @@ class RemoteAssistProjectionService : Service() {
         if (!closing.get() && sessionId.isNotEmpty()) requestStop()
         closing.set(true)
         main.removeCallbacks(authorizationWatchdog)
+        main.removeCallbacks(diagnosticTicker)
         S1Runtime.manager(applicationContext).closeRemoteAssistVideo()
         videoEncoder?.close()
         reader?.setOnImageAvailableListener(null, null)
@@ -241,6 +263,7 @@ class RemoteAssistProjectionService : Service() {
         runCatching { projection?.stop() }
         captureThread?.quitSafely()
         worker.shutdownNow()
+        diagnosticWorker.shutdownNow()
         S1Runtime.detachAssistForeground()
         if (transferStatus == "画面已通过直连发送") transferStatus = "共享已经结束"
         super.onDestroy()
