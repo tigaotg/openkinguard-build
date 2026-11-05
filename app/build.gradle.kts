@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 63
-        versionName = "0.9.28-controller-fit-relay-approval"
+        versionCode = 65
+        versionName = "0.9.30-crosswan-rtc-signaling"
     }
 
     buildTypes {

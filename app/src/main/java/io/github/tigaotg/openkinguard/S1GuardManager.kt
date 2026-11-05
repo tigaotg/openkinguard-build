@@ -341,10 +341,20 @@ class S1GuardManager(context: Context) {
 
     private fun sendRemoteAssistPacket(peer: SavedPeer, kind: String,
                                        sessionId: String, payload: ByteArray) {
+        // Only consent-scoped, signed control/ICE/SDP packets can use the
+        // family's authenticated WSS relay. Captured frames are NEVER encoded
+        // as RemoteAssistStreamWire messages; WebRTC media remains ICE/SRTP.
+        require(RemoteAssistStreamWire.canUsePrivateRelay(kind)) {
+            "远程协助中继仅允许已定义的信令与控制指令"
+        }
         val message = signedRemoteStreamPacket(peer, kind, sessionId, payload)
         val node = verified[peer.relationId]?.let { nodes[it] }
         val result = sendSignedFrame(peer, node, LanTestWire.encode(message),
-            4500, allowRelay = false)
+            4500, allowRelay = RemoteAssistStreamWire.canUsePrivateRelay(kind))
+        if (result.usedRelay && kind == RemoteAssistStreamWire.RTC) {
+            RemoteAssistDiagnostics.warning(
+                "RTC 信令已通过家庭私人中继传送；视频仍需 ICE 建立加密连接")
+        }
         val reply = LanTestWire.decode(result.bytes)
         require(reply.message.payloadKind == RemoteAssistStreamWire.ACK) {
             "远程协助数据没有签名回执"

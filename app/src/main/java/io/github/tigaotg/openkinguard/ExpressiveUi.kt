@@ -2,19 +2,21 @@ package io.github.tigaotg.openkinguard
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 
 /** Small, opt-in explanations. Keep primary controls visible and detailed text tucked away. */
@@ -22,17 +24,19 @@ import androidx.compose.ui.unit.dp
 internal fun FeatureHelp(explanation: String, label: String = "功能说明") {
     var expanded by rememberSaveable { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        TextButton(onClick = { expanded = !expanded },
-            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
-            Text(if (expanded) "收起说明 ↑" else "$label ⓘ",
+        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(Modifier.heightIn(min = 40.dp)
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 2.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(if (expanded) "收起说明 ︿" else "ⓘ $label",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (expanded) {
             Surface(color = MaterialTheme.colorScheme.surfaceContainerLow,
                 shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
-                Text(explanation, modifier = Modifier.padding(14.dp),
+                Text(explanation, modifier = Modifier.padding(10.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall)
             }
@@ -61,7 +65,7 @@ internal fun InlineActionFeedback(value: String?, modifier: Modifier = Modifier)
     }
     Surface(modifier = modifier.fillMaxWidth(), color = background,
         shape = MaterialTheme.shapes.small) {
-        Text(value, modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            style = MaterialTheme.typography.bodyMedium, color = foreground)
+        Text(value, modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.bodySmall, color = foreground)
     }
 }

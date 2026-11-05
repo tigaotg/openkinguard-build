@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
@@ -117,6 +118,8 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
     var confirmEnd by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
     var toolbarVisible by remember { mutableStateOf(false) }
+    var waitingSince by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    var waitingSeconds by remember { mutableLongStateOf(0L) }
 
     fun command(label: String, perform: () -> String) {
         scope.launch {
@@ -137,7 +140,9 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
                 onCollapse()
                 break
             }
+            if (phase != current.phase) waitingSince = SystemClock.elapsedRealtime()
             phase = current.phase
+            waitingSeconds = (SystemClock.elapsedRealtime() - waitingSince) / 1000L
             remoteSize = manager.remoteAssistRtcSize()
             delay(450)
         }
@@ -229,16 +234,34 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
                     }
                 }
             } else {
-                Text(
-                    text = when (phase) {
+                Column(modifier = Modifier.align(Alignment.Center)
+                    .padding(horizontal = 25.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp,
+                        modifier = Modifier.size(32.dp))
+                    Text(text = when (phase) {
                         RemoteAssistConsent.Phase.WAITING_FOR_REPLY ->
                             "已发送请求，等待对方同意"
                         RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
-                            "对方已同意，等待 Android 屏幕共享授权"
+                            "对方已同意 · 正在等待远程画面"
                         else -> "等待远程屏幕共享"
                     },
-                    color = Color.White,
-                    modifier = Modifier.align(Alignment.Center).padding(28.dp))
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium)
+                    if (phase == RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION &&
+                        waitingSeconds >= 12L) {
+                        Text("如果对方手机已经显示‘正在共享屏幕’，" +
+                            "可能是移动网络阻止了 WebRTC 信令或视频直连，" +
+                            "不一定是对方没有授权。",
+                            color = Color.LightGray,
+                            style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = {
+                            report = manager.remoteAssistDiagnosticReport()
+                            diagnosticVisible = true
+                        }) { Text("查看连接诊断", color = Color.White) }
+                    }
+                }
             }
 
             // Top tools are hidden by default: only this small triangle remains.
@@ -279,16 +302,22 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(modifier = Modifier.weight(1f),
+                enabled = phase == RemoteAssistConsent.Phase.ACTIVE,
                 onClick = { command("返回") { manager.sendRemoteAssistBack() } }) {
-                Text("‹  返回", color = Color.White)
+                Text("‹  返回", color = if (phase == RemoteAssistConsent.Phase.ACTIVE)
+                    Color.White else Color.Gray)
             }
             TextButton(modifier = Modifier.weight(1f),
+                enabled = phase == RemoteAssistConsent.Phase.ACTIVE,
                 onClick = { command("主页") { manager.sendRemoteAssistHome() } }) {
-                Text("○  主页", color = Color.White)
+                Text("○  主页", color = if (phase == RemoteAssistConsent.Phase.ACTIVE)
+                    Color.White else Color.Gray)
             }
             TextButton(modifier = Modifier.weight(1f),
+                enabled = phase == RemoteAssistConsent.Phase.ACTIVE,
                 onClick = { command("最近任务") { manager.sendRemoteAssistRecents() } }) {
-                Text("▢  多任务", color = Color.White)
+                Text("▢  多任务", color = if (phase == RemoteAssistConsent.Phase.ACTIVE)
+                    Color.White else Color.Gray)
             }
         }
     }

@@ -10,8 +10,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Video-only WebRTC peer: signed OpenKinGuard packets carry OFFER/ANSWER/ICE,
- * while media travels via encrypted SRTP and ICE P2P, never through the SOS relay.
+ * Video-only WebRTC peer: signed OpenKinGuard packets carry OFFER/ANSWER/ICE
+ * via LAN/UDP or the owner's private WSS relay when direct signaling fails.
+ * Media travels via encrypted SRTP and ICE, never as relay application frames.
  * Screen capture is possible only with a fresh system MediaProjection grant.
  */
 internal class RemoteAssistWebRtc(

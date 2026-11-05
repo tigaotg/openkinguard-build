@@ -97,37 +97,35 @@ internal object SettingsMenuLayout {
 
 @Composable
 internal fun SettingsGroupEntry(group: SettingsGroup, expanded: Boolean, onClick: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    OutlinedCard(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = MaterialTheme.shapes.medium) {
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(group.title, style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(group.title, style = MaterialTheme.typography.titleMedium)
                 Text(group.description, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.width(8.dp))
             Text(if (expanded) "⌃" else "⌄", style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onPrimaryContainer)
+                color = MaterialTheme.colorScheme.primary)
         }
     }
 }
 
 @Composable
 fun SettingsMenuEntry(destination: SettingsDestination, onClick: () -> Unit) {
-    // Every second-level destination uses the same lightweight row, distinct from
-    // the six prominent first-level category panels.
-    OutlinedCard(modifier = Modifier.fillMaxWidth().padding(start = 12.dp)
+    // Subpages are compact list rows, visually subordinate to category cards.
+    Surface(modifier = Modifier.fillMaxWidth().padding(start = 12.dp)
         .clickable(onClick = onClick),
-        shape = MaterialTheme.shapes.small) {
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(destination.label, style = MaterialTheme.typography.titleMedium)
+                verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(destination.label, style = MaterialTheme.typography.bodyLarge)
                 Text(destination.summary, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

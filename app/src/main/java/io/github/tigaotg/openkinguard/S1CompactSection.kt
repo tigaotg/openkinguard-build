@@ -117,6 +117,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var expandedSettingsGroup by rememberSaveable { mutableStateOf<String?>(null) }
     var showPairingNickname by rememberSaveable { mutableStateOf(false) }
     var showPairingRelations by rememberSaveable { mutableStateOf(false) }
+    var showRemotePairingSetup by rememberSaveable { mutableStateOf(false) }
     var recordView by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var lanError by remember { mutableStateOf("") }
@@ -888,9 +889,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant)
             NavigationBarItem(selected = page == 0, onClick = { navigateTo(0) },
                 icon = { Text("♥", fontSize = 22.sp) }, label = { Text("求助") }, colors = itemColors)
+            NavigationBarItem(selected = page == 2, onClick = { navigateTo(2) },
+                icon = { Text("▤", fontSize = 22.sp) }, label = { Text("记录") }, colors = itemColors)
             NavigationBarItem(selected = page == 5, onClick = { navigateTo(5) },
                 icon = { Text("◈", fontSize = 22.sp) }, label = { Text("穿戴") }, colors = itemColors)
-            NavigationBarItem(selected = page != 0 && page != 5, onClick = {
+            NavigationBarItem(selected = page != 0 && page != 2 && page != 5, onClick = {
                     navigateTo(3)
                 },
                 icon = { Text("⚙", fontSize = 22.sp) }, label = { Text("设置") }, colors = itemColors)
@@ -900,8 +903,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             onRefresh = { if (page == 0) refreshByGesture() },
             modifier = Modifier.fillMaxSize().padding(padding)) {
         Column(Modifier.fillMaxSize()
-            .verticalScroll(pageScroll).padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            .verticalScroll(pageScroll).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)) {
             assistSession?.takeIf { it.direction == RemoteAssistConsent.Direction.INCOMING &&
                 it.phase == RemoteAssistConsent.Phase.ACTIVE }?.let {
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -965,44 +968,25 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }
                 }
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("快速求助", style = MaterialTheme.typography.titleLarge,
+                    Column(modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("紧急操作", style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold)
-                        Button(modifier = Modifier.fillMaxWidth().height(68.dp),
+                        Button(modifier = Modifier.fillMaxWidth().height(60.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error,
                                 contentColor = MaterialTheme.colorScheme.onError),
                             onClick = { confirmSos = true }) {
-                            Text("发起演练 SOS", style = MaterialTheme.typography.titleLarge)
+                            Text("发起演练 SOS", style = MaterialTheme.typography.titleMedium)
                         }
                         InlineActionFeedback(sosFeedback)
-                        currentCases.firstOrNull { it.ownSos }?.let { latest ->
-                            val acknowledgements = latest.deliveredRelations.size
-                            Surface(color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                shape = MaterialTheme.shapes.large) {
-                                Column(Modifier.fillMaxWidth().padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("最近一次 SOS · ${compactStatus(latest.status)}",
-                                        style = MaterialTheme.typography.titleSmall)
-                                    Text(if (acknowledgements == 0)
-                                        "尚未记录到救助者签名送达回执，不能认定已送达"
-                                    else "已收到 $acknowledgements 条签名送达回执；仍需救助者实际接手",
-                                        style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                        }
                         if (sosFeedback.contains("失败") || sosFeedback.contains("待确认") ||
                             sosFeedback.contains("尚未") || sosFeedback.contains("等待")) {
-                            Text("排查建议：确认已绑定救助者、双方网络可用且应用正在监听；" +
+                            FeatureHelp("确认已绑定救助者、双方网络可用且应用正在监听；" +
                                 "查看最新签名回执。超时不代表对方拒绝，也不能当作已送达。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                label = "查看未送达的排查建议")
                         }
-                        FeatureHelp("发送演练求助并等待已绑定救助者的签名回执。" +
-                            "不会自动拨打电话或发送短信；真实危险请立即使用当地急救渠道。",
-                            label = "SOS 有什么作用")
-                        OutlinedButton(modifier = Modifier.fillMaxWidth().height(54.dp),
+                        OutlinedButton(modifier = Modifier.fillMaxWidth().height(48.dp),
                             enabled = !busy, onClick = {
                                 runTask("正在发送报平安", inlineResult = { checkinFeedback = it }) {
                                     val id = manager.createOwnCheckin()
@@ -1013,8 +997,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                 }
                             }) { Text("我平安 · 通知救助者") }
                         InlineActionFeedback(checkinFeedback)
-                        FeatureHelp("向已绑定的救助者发送报平安；必须收到对方签名回复才算送达。",
-                            label = "报平安有什么作用")
+                        FeatureHelp("SOS 和报平安仅发送给已绑定的家人，必须查看签名回执。" +
+                            "演练 SOS 不会自动拨打电话或发送短信；" +
+                            "真实危险请立即使用当地急救渠道。", label = "操作说明与安全提示")
                     }
                 }
             }
@@ -1043,6 +1028,64 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
             }
             if (page == 0) {
+                val topCase = currentCases.firstOrNull {
+                    !it.ownSos && it.status == ExerciseStatus.OPEN
+                } ?: currentCases.firstOrNull {
+                    it.ownSos && it.status == ExerciseStatus.ACCEPTED
+                } ?: currentCases.firstOrNull()
+                if (topCase != null) {
+                    Text("当前求助", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold)
+                    ElevatedCard(modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = if (topCase.status == ExerciseStatus.ACCEPTED &&
+                                topCase.ownSos) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.errorContainer)) {
+                        Column(Modifier.fillMaxWidth().padding(13.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text(if (topCase.ownSos) "我发出的演练 SOS" else
+                                "${peerName(topCase.relationId, topCase.subjectFingerprint)} 发来演练 SOS",
+                                style = MaterialTheme.typography.titleMedium)
+                            Text(if (topCase.ownSos && topCase.status == ExerciseStatus.ACCEPTED) {
+                                val helper = relations.firstOrNull {
+                                    it.peerFingerprint == topCase.acceptedBy }
+                                "${helper?.let { peerName(it.relationId, it.peerFingerprint) } ?: "已验证救助者"} 已接手"
+                            } else if (topCase.ownSos) {
+                                if (topCase.deliveredRelations.isEmpty())
+                                    "${compactStatus(topCase.status)} · 未收到签名回执，不能认定已送达"
+                                else "${compactStatus(topCase.status)} · 已有 ${topCase.deliveredRelations.size} 条签名回执，仍需实际接手"
+                            } else compactStatus(topCase.status),
+                                style = MaterialTheme.typography.bodySmall)
+                            Row(Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text(compactTime(topCase.createdAt),
+                                    style = MaterialTheme.typography.labelSmall)
+                                if (topCase.ownSos && topCase.status != ExerciseStatus.CLOSED) {
+                                    TextButton(onClick = { closing = topCase.eventId }) {
+                                        Text("结束演练")
+                                    }
+                                } else if (!topCase.ownSos &&
+                                    topCase.status == ExerciseStatus.OPEN) {
+                                    Button(enabled = !busy, onClick = {
+                                        runTask("请求接手", inlineResult = { sosFeedback = it }) {
+                                            if (manager.claim(topCase.eventId) ==
+                                                io.github.tigaotg.openkinguard.security.protocol.S1CaseWire.ACCEPT)
+                                                "已签名确认接手，对方将收到提醒" else "未获对方确认"
+                                        }
+                                    }) { Text("确认接手") }
+                                }
+                            }
+                            if (!topCase.ownSos && topCase.status == ExerciseStatus.OPEN)
+                                InlineActionFeedback(sosFeedback)
+                        }
+                    }
+                    if (currentCases.size > 1) TextButton(onClick = {
+                        recordView = 0; navigateTo(2)
+                    }) { Text("查看其余 ${currentCases.size - 1} 条请求") }
+                }
+            }
+            if (page == 0) {
                 // Always put the offline-device entry above the potentially long online list.
                 // The source is the saved pairing relation list, never unpaired LAN discoveries.
                 OutlinedCard(modifier = Modifier.fillMaxWidth()) {
@@ -1054,11 +1097,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             horizontalArrangement = Arrangement.SpaceBetween) {
                             Column(Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text("未在线设备（${offlineHomeDevices.size} 台）",
+                                Text("未在线家人（${offlineHomeDevices.size} 台）",
                                     style = MaterialTheme.typography.titleMedium)
-                                Text("已绑定，但当前没有确认在线的手机",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Text(if (showOfflineDevices) "收起 ↑" else "查看 ›",
                                 style = MaterialTheme.typography.labelLarge,
@@ -1098,23 +1138,23 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         style = MaterialTheme.typography.bodySmall)
                                 }
                             }
-                            if (offlineHomeDevices.isNotEmpty()) {
-                                Text("未在线设备不提供远程操作；可在设置中管理已绑定关系。",
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    style = MaterialTheme.typography.labelSmall)
-                            }
                         }
                     }
                 }
-                Text("在线家人",
-                    style = MaterialTheme.typography.titleLarge)
-                TextButton(onClick = { refreshByGesture() }, enabled = !busy) {
-                    Text("↻ 刷新在线状态")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("在线家人", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = { refreshByGesture() }, enabled = !busy) {
+                        Text("↻ 刷新")
+                    }
                 }
                 InlineActionFeedback(actionFeedback["刷新应用状态"])
                 InlineActionFeedback(lanError)
-                if (relations.isEmpty()) Text("尚未连接家人的手机：进入设置 → 连接新设备。")
+                if (relations.isEmpty()) {
+                    Text("还没有连接家人手机。", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { navigateTo(1) }) { Text("连接家人手机") }
+                }
                 else if (onlineHomeDevices.isEmpty())
                     Text("暂无已确认在线的设备。可刷新状态，或点开上方的未在线设备列表。")
                 onlineHomeDevices.forEach { device ->
@@ -1135,14 +1175,14 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(peerName(displayPeer.relationId, device.fingerprint),
                                 style = MaterialTheme.typography.titleMedium)
-                            Text("● 在线（${when {
+                            Text("● 在线 · ${when {
                                 directOnline -> "公网UDP直连"
                                 relayOnline -> "私人中继"
                                 else -> "局域网"
-                            }}已验签） · " +
+                            }}已验签 · " +
                                 when {
                                     helperPeer != null && subjectPeer != null ->
-                                        "双向互助：既帮助对方，也接受对方帮助"
+                                        "双向互助"
                                     helperPeer != null -> "我的被救助者"
                                     else -> "我的救助者"
                                 }, color = MaterialTheme.colorScheme.primary,
@@ -1192,10 +1232,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                             }
                                         }) { Text("结束远程协助") }
                                     }
-                                    FeatureHelp("仅连接已经绑定的家人；必须由对方本人逐次同意，" +
-                                        "并经安卓系统授权屏幕共享。远程操作还需对方手动开启辅助功能；" +
-                                        "仅经局域网或已认证的 UDP P2P 传屏，不经公共节点转发。" +
-                                        "结束后立即撤销权限。视频由 WebRTC 加密点对点传输。")
                                     OutlinedButton(enabled = !busy && roleOnline(helperPeer),
                                         modifier = Modifier.fillMaxWidth(), onClick = {
                                         lastLocationRequestAt[device.fingerprint] =
@@ -1209,8 +1245,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         }
                                     }) { Text("请求对方位置") }
                                     InlineActionFeedback(deviceFeedback["${device.fingerprint}:location"])
-                                    FeatureHelp("仅向对方发起一次定位请求，必须得到对方授权；" +
-                                        "以收到的验签坐标及采集时间为准。")
                                 }
                                 if (subjectPeer != null) {
                                     OutlinedButton(enabled = !busy,
@@ -1225,8 +1259,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         }
                                     }) { Text("向对方报平安") }
                                     InlineActionFeedback(deviceFeedback["${device.fingerprint}:checkin"])
-                                    FeatureHelp("只给这台已绑定的救助者发送报平安；" +
-                                        "需要对方签名回执才能确认送达。")
                                 }
                                 if (!snapshot.history.simpleHomeEnabled) {
                                     TextButton(onClick = {
@@ -1236,15 +1268,22 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         } else selectedFindPortal = portal
                                     }) { Text(if (portal == null) "设置找手机入口" else "用厂商服务找手机") }
                                 }
+                                FeatureHelp("远程协助要求对方逐次同意并允许 Android 屏幕共享；" +
+                                    "控制操作还需要辅助功能授权。定位需要对方授权，显示的是最近验签位置；" +
+                                    "报平安须收到签名回执才算送达。", label = "家人操作说明")
                                 }
-                            if (requestingDevice == device.fingerprint)
+                            if (expandedHomeDevices[device.fingerprint] == true &&
+                                requestingDevice == device.fingerprint)
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            lastLocationRequestAt[device.fingerprint]?.let { requested ->
+                            lastLocationRequestAt[device.fingerprint]?.takeIf {
+                                expandedHomeDevices[device.fingerprint] == true
+                            }?.let { requested ->
                                 Text("上次发起定位请求：${FriendlyElapsedTime.since(requested, homeNow)}" +
                                     if (requestingDevice == device.fingerprint) " · 等待对方回复" else "",
                                     style = MaterialTheme.typography.bodySmall)
                             }
-                            if (latestFix != null) {
+                            if (latestFix != null &&
+                                expandedHomeDevices[device.fingerprint] == true) {
                                 val historical = LocationMapPolicy.isHistorical(
                                     latestFix.capturedAtMillis, homeNow)
                                 Text("上次获取的位置：${FriendlyElapsedTime.since(
@@ -1258,8 +1297,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         latestFix.accuracyCm / 100f),
                                     color = MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.bodySmall)
-                                Text(if (historical) "以下为历史位置，跳转前需要再次确认。"
-                                    else "点击地图入口，查看对方最近一次已验签的位置。",
+                                if (historical) Text("历史位置，打开地图前需再次确认",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Row(modifier = Modifier.fillMaxWidth(),
@@ -1279,56 +1317,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                     }
                 }
-                if (!snapshot.listening) Text("当前局域网服务未连接，请保持本应用在前台")
-                val topCase = currentCases.firstOrNull { !it.ownSos && it.status == ExerciseStatus.OPEN }
-                    ?: currentCases.firstOrNull { it.ownSos && it.status == ExerciseStatus.ACCEPTED }
-                    ?: currentCases.firstOrNull()
-                if (topCase != null) {
-                    HorizontalDivider()
-                    Text("当前求助", style = MaterialTheme.typography.titleLarge)
-                    ElevatedCard(modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.elevatedCardColors(
-                            containerColor = if (topCase.status == ExerciseStatus.ACCEPTED && topCase.ownSos)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.errorContainer)) {
-                        Column(Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (topCase.ownSos) {
-                                Text("我发出的测试 SOS", style = MaterialTheme.typography.titleLarge)
-                                if (topCase.status == ExerciseStatus.ACCEPTED) {
-                                    val helper = relations.firstOrNull { it.peerFingerprint == topCase.acceptedBy }
-                                    Text("${helper?.let { peerName(it.relationId, it.peerFingerprint) } ?: "已验证救助者"} 已接手你的求助",
-                                        style = MaterialTheme.typography.titleMedium)
-                                } else Text("正在等待救助者接手")
-                                if (topCase.status != ExerciseStatus.CLOSED) {
-                                    OutlinedButton(onClick = { closing = topCase.eventId }) {
-                                        Text("结束本次演练")
-                                    }
-                                }
-                            } else {
-                                Text("${peerName(topCase.relationId, topCase.subjectFingerprint)} 发来测试 SOS",
-                                    style = MaterialTheme.typography.titleLarge)
-                                Text(compactStatus(topCase.status))
-                                if (topCase.status == ExerciseStatus.OPEN) {
-                                    Button(enabled = !busy, onClick = {
-                                        runTask("请求接手", inlineResult = { sosFeedback = it }) {
-                                            if (manager.claim(topCase.eventId) ==
-                                                io.github.tigaotg.openkinguard.security.protocol.S1CaseWire.ACCEPT)
-                                                "已签名确认接手，对方手机将收到醒目通知" else "未获对方确认"
-                                        }
-                                    }) { Text("确认接手") }
-                                    InlineActionFeedback(sosFeedback)
-                                }
-                            }
-                            Text(compactTime(topCase.createdAt))
-                        }
-                    }
-                    if (currentCases.size > 1) TextButton(onClick = {
-                        recordView = 0; navigateTo(2)
-                    }) { Text("还有 ${currentCases.size - 1} 条当前求助 · 查看") }
-                } else {
-                Text("暂无当前求助。历史请求可在设置 → 历史记录中查看。")
-                }
+                if (!snapshot.listening) InlineActionFeedback(
+                    "当前本机没有启动监听，可能无法接收家人的请求")
             }
 
             if (page == 5) {
@@ -1340,9 +1330,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
 
             if (page == 1) {
                 TextButton(onClick = { returnToSettings() }) { Text("← 返回设置") }
-                Text("连接家人手机", style = MaterialTheme.typography.headlineMedium)
-                Text("已经建立 ${relations.size} 条帮助关系。新手机请在下方选择；" +
-                    "两台手机需核对相同的安全码。", style = MaterialTheme.typography.bodySmall)
+                Text("连接家人", style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold)
+                Text("${relations.size} 条已建立的帮助关系 · 新绑定需双方核对安全码",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TextButton(onClick = { showPairingNickname = !showPairingNickname }) {
                     Text(if (showPairingNickname) "收起本机昵称" else "修改本机昵称 ▾")
                 }
@@ -1589,11 +1581,18 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
                 }
                 HorizontalDivider()
-                Text("建立新关系", style = MaterialTheme.typography.titleLarge)
+                Text("建立新关系", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
                 FeatureHelp("同一个 Wi-Fi 下发现对方后，点击邀请；对方只需同意一次。" +
                     "两台手机核对同一个8位安全码，由被救助者确认后，后续签名自动完成。" +
                     "远程加入家庭中继与建立互助关系仍是两种独立授权。", label = "怎么连接家人的手机")
                 val remoteSession = manager.remotePairingSession()
+                TextButton(onClick = { showRemotePairingSetup = !showRemotePairingSetup }) {
+                    Text(if (showRemotePairingSetup || remoteSession != null)
+                        "跨网邀请 · 收起说明" else "跨网邀请家人（不在同一 Wi-Fi） ▾")
+                }
+                if (showRemotePairingSetup || remoteSession != null ||
+                    remoteInviteDraft.isNotBlank()) {
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1731,6 +1730,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                         InlineActionFeedback(remoteInviteFeedback)
                     }
+                }
                 }
                 val pairing = manager.pendingPairing()
                 val pendingOffer = manager.pendingHelpOffer()
@@ -1919,9 +1919,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             }
 
             if (page == 2) {
-                TextButton(onClick = { returnToSettings() }) { Text("← 返回设置") }
-                Text("历史记录与请求", style = MaterialTheme.typography.titleLarge)
-                Text("我的记录", style = MaterialTheme.typography.titleLarge)
+                Text("记录", style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     listOf("当前请求", "历史请求", "报平安", "定位", "操作").forEachIndexed { index, label ->
@@ -1931,7 +1930,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
                 when (recordView) {
                     0 -> {
-                        Text("每台设备只保留一条当前 SOS 请求；新请求替代旧请求。")
+                        FeatureHelp("每台设备只保留一条当前 SOS 请求；新请求替代旧请求。",
+                            label = "当前请求说明")
                         if (currentCases.isEmpty()) Text("暂无当前求助请求")
                         currentCases.forEach { item ->
                             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -1977,7 +1977,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                     }
                     1 -> {
-                        Text("历史请求只供查看，不会再次提醒或允许接手。")
+                        FeatureHelp("历史请求只供查看，不会再次提醒或允许接手。")
                         if (archivedCases.isEmpty() && archivedCheckins.isEmpty()) {
                             Text("暂无历史请求")
                         }
@@ -2059,7 +2059,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                     }
                     3 -> {
-                        Text("只有主动查询并通过签名验证的位置会被本机加密记录。" +
+                        FeatureHelp("只有主动查询并通过签名验证的位置会被本机加密记录。" +
                             "记录不代表当前实时位置；最多保留最近200条。")
                         if (snapshot.history.safetyZoneEvents.isNotEmpty()) {
                             Text("安全区域历史（仅前台手动定位得出的结果）",
@@ -2104,7 +2104,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                     }
                     4 -> {
-                        Text("最近的操作结果与失败原因（本机加密保存）。网络超时不能证明对方拒绝。")
+                        FeatureHelp("最近的操作结果与失败原因保存在本机；" +
+                            "网络超时不能证明对方拒绝。")
                         if (snapshot.history.commandRecords.isEmpty()) Text("暂无操作记录")
                         snapshot.history.commandRecords.takeLast(50).asReversed().forEach { item ->
                             Card(modifier = Modifier.fillMaxWidth()) {
@@ -2127,8 +2128,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }
                 }
                 HorizontalDivider()
-                Text("导出历史", style = MaterialTheme.typography.titleLarge)
-                Text("仅在你确认后导出，不包括私钥和手动联系人的电话号码。")
+                Text("导出历史", style = MaterialTheme.typography.titleMedium)
+                FeatureHelp("导出前需要你的确认，不包括私钥和手动联系人的电话号码。",
+                    label = "导出范围")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { exportWarning = "json" }) { Text("导出 JSON") }
                     OutlinedButton(onClick = { exportWarning = "csv" }) { Text("导出 CSV") }

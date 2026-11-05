@@ -33,26 +33,33 @@ private fun healthCsv(rows: List<HealthBleReading>): String = buildString {
 
 @Composable
 private fun HealthLatestReadings(state: HealthBleState, nowMillis: Long) {
-    Text("最新测量", style = MaterialTheme.typography.titleLarge)
+    Text("最新测量", style = MaterialTheme.typography.titleMedium)
     val latest = state.readings.distinctBy { it.metric.kind }
     if (latest.isEmpty()) {
         Text("还没有读数。连接设备后，请等待手环实际测量并上报。",
             style = MaterialTheme.typography.bodySmall)
-    } else latest.forEach { record ->
-        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(record.metric.kind.label, style = MaterialTheme.typography.titleMedium)
+    } else ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        latest.forEachIndexed { index, record ->
+            if (index > 0) HorizontalDivider()
+            Row(Modifier.fillMaxWidth().padding(vertical = 9.dp),
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(record.metric.kind.label, style = MaterialTheme.typography.titleSmall)
+                    val time = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(record.capturedAt))
+                    val freshness = HealthDataFreshnessPolicy.assess(nowMillis, record.capturedAt)
+                    Text("${record.deviceName} · $time · " + when (freshness) {
+                        HealthDataFreshness.RECENT -> "最近5分钟"
+                        HealthDataFreshness.STALE -> "历史读数"
+                        HealthDataFreshness.CLOCK_MISMATCH -> "时间异常"
+                        HealthDataFreshness.NO_READING -> "无记录"
+                    }, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Text("${record.metric.display} ${record.metric.unit}",
-                    style = MaterialTheme.typography.headlineMedium)
-                val time = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(record.capturedAt))
-                val freshness = HealthDataFreshnessPolicy.assess(nowMillis, record.capturedAt)
-                Text("${record.deviceName} · $time · " + when (freshness) {
-                    HealthDataFreshness.RECENT -> "最近5分钟读数"
-                    HealthDataFreshness.STALE -> "已过期的历史读数"
-                    HealthDataFreshness.CLOCK_MISMATCH -> "时间异常，需核对手机时钟"
-                    HealthDataFreshness.NO_READING -> "无记录"
-                }, style = MaterialTheme.typography.bodySmall)
+                    style = MaterialTheme.typography.titleMedium)
             }
+        }
         }
     }
 }
@@ -128,12 +135,12 @@ fun HealthDevicesSection(monitor: HealthBleMonitor,
     }
 
     if (mode == WearableSectionMode.OVERVIEW) {
-    Text("穿戴设备", style = MaterialTheme.typography.headlineMedium)
+    Text("穿戴", style = MaterialTheme.typography.headlineMedium)
     FeatureHelp("只连接本机蓝牙健康设备，读取设备实际上报的测量值。" +
         "穿戴设备不是已绑定的家人手机，家属也不会自动获得这些数据。", label = "穿戴与家人设备有什么区别")
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(if (state.connected) "● 已连接：${state.connectedName.ifBlank { "健康设备" }}" else
                 "○ 尚未连接健康设备", style = MaterialTheme.typography.titleMedium)
             Text(state.status, style = MaterialTheme.typography.bodySmall)
@@ -150,7 +157,7 @@ fun HealthDevicesSection(monitor: HealthBleMonitor,
 
     HealthLatestReadings(state, clockNow)
 
-    Text("查找和连接", style = MaterialTheme.typography.titleLarge)
+    Text("查找和连接", style = MaterialTheme.typography.titleMedium)
     FeatureHelp("会同时列出系统已配对/已建立 GATT 连接的设备与新扫描到的 BLE 设备。" +
         "系统昵称优先于广播名称；没有名称时可通过信号强度、设备类型及广播协议辅助区分。" +
         "你也可以为确认过的设备设置仅本机可见的备注，它会优先于系统昵称显示。" +

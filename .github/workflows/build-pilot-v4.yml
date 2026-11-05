@@ -59,7 +59,7 @@ jobs:
       - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-0.9.17-PilotV4-signed
+          name: OpenKinGuard-0.9.30-PilotV4-signed
           path: app/build/outputs/apk/pilotV4/*.apk
           if-no-files-found: error
           retention-days: 14

@@ -20,6 +20,11 @@ object RemoteAssistStreamWire {
     val requestKinds = setOf(RTC, TAP, SWIPE, BACK, HOME, RECENTS, DIAGNOSTIC)
     val kinds = requestKinds + ACK
 
+    /** Private WSS fallback is only for small signed control/signaling packets.
+     * WebRTC media, screen frames, and ACKs are not outbound requests here.
+     */
+    fun canUsePrivateRelay(kind: String): Boolean = kind in requestKinds
+
     data class Packet(
         val relationId: String,
         val sessionId: String,
