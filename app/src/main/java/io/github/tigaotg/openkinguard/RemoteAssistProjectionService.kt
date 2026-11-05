@@ -60,13 +60,14 @@ class RemoteAssistProjectionService : Service() {
         override fun run() {
             if (closing.get() || sessionId.isBlank()) return
             val id = sessionId
-            val report = RemoteAssistDiagnostics.peerSummary()
+            val report = RemoteAssistDiagnostics.peerSummary(
+                AppVersionInfo.name(applicationContext))
             runCatching {
                 diagnosticWorker.execute {
                     runCatching {
                         S1Runtime.manager(applicationContext).sendRemoteAssistDiagnostic(id, report)
                     }.onFailure {
-                        RemoteAssistDiagnostics.error("诊断回传-" + it.javaClass.simpleName)
+                        RemoteAssistDiagnostics.warning("诊断回传-" + it.javaClass.simpleName)
                     }
                 }
             }
@@ -157,6 +158,8 @@ class RemoteAssistProjectionService : Service() {
                 runCatching { virtualDisplay?.release() }
                 virtualDisplay = null
                 RemoteAssistDiagnostics.error("硬件初始化-" + failure.javaClass.simpleName)
+                RemoteAssistDiagnostics.fallback("H.264连接或编码初始化失败：" +
+                    failure.javaClass.simpleName)
                 transferStatus = "硬件视频初始化失败，使用兼容画面：${failure.javaClass.simpleName}"
             }
             if (!hardwareStarted) {

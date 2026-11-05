@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 58
-        versionName = "0.9.23-background-listener-controls"
+        versionCode = 59
+        versionName = "0.9.24-version-and-video-diagnostics"
     }
 
     buildTypes {

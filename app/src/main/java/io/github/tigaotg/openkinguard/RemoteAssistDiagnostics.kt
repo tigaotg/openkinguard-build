@@ -19,6 +19,8 @@ internal object RemoteAssistDiagnostics {
     private var dimensions = "未知"
     private var status = "尚未采集"
     private var lastError = "无"
+    private var lastWarning = "无"
+    private var fallbackReason = "未发生回退"
     private var active = false
     private val encodedEvents = ArrayDeque<Long>()
     private val sentEvents = ArrayDeque<Long>()
@@ -46,6 +48,8 @@ internal object RemoteAssistDiagnostics {
         dimensions = "未知"
         status = "等待系统授权 / 连接"
         lastError = "无"
+        lastWarning = "无"
+        fallbackReason = "未发生回退"
         active = true
         encodedEvents.clear()
         sentEvents.clear()
@@ -68,11 +72,13 @@ internal object RemoteAssistDiagnostics {
     }
 
     @Synchronized fun mode(value: String) {
+        if (codec == value) return
         codec = value.take(64)
         event("编码模式：$codec")
     }
 
     @Synchronized fun connection(value: String) {
+        if (transport == value) return
         transport = value.take(64)
         event("连接：$transport")
     }
@@ -117,6 +123,17 @@ internal object RemoteAssistDiagnostics {
         event("异常：$lastError")
     }
 
+    @Synchronized fun warning(reason: String) {
+        lastWarning = reason.take(70)
+        event("非致命警告：$lastWarning")
+    }
+
+    /** Explain WHY the high-FPS LAN transport was unavailable, even after JPEG starts. */
+    @Synchronized fun fallback(reason: String) {
+        fallbackReason = reason.take(120)
+        event("视频降级：$fallbackReason")
+    }
+
     @Synchronized fun finish() { active = false; event("会话结束") }
 
     private fun stamp(buffer: ArrayDeque<Long>) {
@@ -137,21 +154,23 @@ internal object RemoteAssistDiagnostics {
     }
 
     /** Bounded performance-only summary for the approved family controller. */
-    @Synchronized fun peerSummary(): String {
+    @Synchronized fun peerSummary(appVersion: String): String {
         val now = SystemClock.elapsedRealtime()
         val average = if (sendCalls == 0L) "暂无" else
             "${sendDurationTotalMs / sendCalls}ms"
-        return "被控制端: ${Build.MANUFACTURER} ${Build.MODEL}; " +
+        return "被控制端版本: $appVersion\n被控制端: ${Build.MANUFACTURER} ${Build.MODEL}; " +
             "Android ${Build.VERSION.RELEASE}/API ${Build.VERSION.SDK_INT}\n" +
             "视频: $codec; 尺寸: $dimensions; 网络: $transport\n" +
             "编码FPS(最近5秒): ${fps(encodedEvents, now)}\n" +
             "发送FPS(最近5秒): ${fps(sentEvents, now)}\n" +
             "累计发送: $sentFrames 帧 / $sentBytes 字节\n" +
             "单次发送耗时: 平均$average, 最大${sendDurationMaxMs}ms\n" +
-            "已丢弃: $droppedFrames; 状态: $status\n最近异常: $lastError"
+            "已丢弃: $droppedFrames; 状态: $status\n" +
+            "H.264降级原因: $fallbackReason\n" +
+            "最近异常: $lastError; 非致命警告: $lastWarning"
     }
 
-    @Synchronized fun report(): String {
+    @Synchronized fun report(appVersion: String): String {
         val now = SystemClock.elapsedRealtime()
         val age = if (lastVideoAt == 0L) "未收到视频事件"
             else "${now - lastVideoAt}ms 前"
@@ -159,7 +178,7 @@ internal object RemoteAssistDiagnostics {
             else "${sendDurationTotalMs / sendCalls}ms"
         return """
 OpenKinGuard 远程协助诊断（本机）
-测试版：0.9.22
+安装版本：$appVersion
 设备：${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
 角色：$role
 会话：${if (active) "进行中" else "未进行"}
@@ -168,6 +187,7 @@ OpenKinGuard 远程协助诊断（本机）
 视频模式：$codec
 画面分辨率：$dimensions
 实时状态：$status
+H.264降级原因：$fallbackReason
 
 【最近5秒实际事件，不是目标帧率】
 编码输出：${fps(encodedEvents, now)} FPS
@@ -182,6 +202,7 @@ OpenKinGuard 远程协助诊断（本机）
 每帧阻塞发送耗时：平均 $avgSend，最大 ${sendDurationMaxMs}ms
 最近视频活动：$age
 最近异常：$lastError
+最近非致命警告：$lastWarning
 
 【测量边界】
 以上为本机实际计数；获得对方屏幕共享授权后控制端还会接收对方的简要编码状态。

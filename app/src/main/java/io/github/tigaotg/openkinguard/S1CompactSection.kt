@@ -3163,8 +3163,15 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     HealthDevicesSection(healthMonitor, WearableSectionMode.TECHNICAL)
                 }
                 if (settingsSection == SettingsDestination.ABOUT) {
+                    val installedVersion = remember(context.packageName) {
+                        AppVersionInfo.installed(context)
+                    }
                     Text("OpenKinGuard · 亲友守护", style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold)
+                    Text("当前安装版本：${installedVersion.name}",
+                        style = MaterialTheme.typography.titleMedium)
+                    Text("内部版本号：${installedVersion.code} · Android 版本信息来自实际安装的 APK",
+                        style = MaterialTheme.typography.bodySmall)
                     Text("一款由 tigao 发起的公益开源 Android 家庭安全互助软件。" +
                         "我们希望缓解老人独居、紧急情况下求助困难、家属无法及时了解平安状态，" +
                         "以及老人遇到智能手机操作问题却得不到远程帮助等现实问题。")

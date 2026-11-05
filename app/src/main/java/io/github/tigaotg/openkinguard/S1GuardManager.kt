@@ -197,7 +197,7 @@ class S1GuardManager(context: Context) {
         val peer = if (matching) remotePeerDiagnostics else ""
         val age = if (remotePeerDiagnosticAt == 0L || !matching) "尚未收到" else
             "${(System.currentTimeMillis() - remotePeerDiagnosticAt) / 1000}秒前"
-        return RemoteAssistDiagnostics.report() +
+        return RemoteAssistDiagnostics.report(AppVersionInfo.name(app)) +
             "\n\n【控制端详细接收/解码计数】\n" +
             remoteVideoFrames.diagnostics() + "\n" +
             "\n" + remoteAssistFrames.diagnostics() +
@@ -236,8 +236,16 @@ class S1GuardManager(context: Context) {
         val session = requireNotNull(remoteAssistConsent.snapshot())
         val peer = relations().singleOrNull { it.relationId == session.relationId &&
             it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
-            ?: return false
-        val node = verified[peer.relationId]?.let { nodes[it] } ?: return false
+            ?: run {
+                RemoteAssistDiagnostics.fallback("缺少当前有效的被控制设备帮助关系")
+                return false
+            }
+        val node = verified[peer.relationId]?.let { nodes[it] } ?: run {
+            RemoteAssistDiagnostics.fallback(
+                "缺少已经验签的局域网IPv4端点，可能只有UDP P2P可用；请检查两机Wi-Fi与局域网发现")
+            RemoteAssistDiagnostics.connection("H.264 局域网 TCP 未建立")
+            return false
+        }
         RemoteAssistDiagnostics.connection("局域网 TCP / 端口 " + node.port)
         closeRemoteAssistVideo()
         val socket = Socket()
@@ -260,6 +268,8 @@ class S1GuardManager(context: Context) {
             return true
         } catch (failure: Exception) {
             RemoteAssistDiagnostics.error("视频连接-" + failure.javaClass.simpleName)
+            RemoteAssistDiagnostics.fallback("局域网 TCP / 签名握手失败：" +
+                failure.javaClass.simpleName)
             runCatching { socket.close() }
             throw failure
         }
@@ -2453,6 +2463,12 @@ class S1GuardManager(context: Context) {
             when (msg.payloadKind) {
                 RemoteAssistStreamWire.FRAME -> {
                     if (remoteAssistFrames.accept(packet)) {
+                        remoteAssistFrames.latest()?.let { preview ->
+                            RemoteAssistDiagnostics.mode("兼容 JPEG 接收")
+                            RemoteAssistDiagnostics.connection("兼容图片经已验签直连接收（LAN或UDP P2P）")
+                            RemoteAssistDiagnostics.size(preview.width, preview.height)
+                            RemoteAssistDiagnostics.onReceived(preview.jpeg.size)
+                        }
                         remoteAssistConsent.remotePreviewStarted(packet.sessionId)
                         signal()
                     }
