@@ -74,6 +74,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     name: Emulator ${{ matrix.name }} (API ${{ matrix.api }})
+    env:
+      # Both avdmanager and emulator must resolve the same writable AVD directory.
+      ANDROID_AVD_HOME: ${{ runner.temp }}/okg-android-avds
+      ANDROID_USER_HOME: ${{ runner.temp }}/okg-android-user
     steps:
       - uses: actions/checkout@v4
       - uses: android-actions/setup-android@v3
@@ -85,10 +89,14 @@ jobs:
           path: emulator-apk
       - name: Provision Android emulator and enable hardware acceleration
         run: |
+          mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME"
           sdkmanager --install emulator "system-images;android-${{ matrix.api }};google_apis;x86_64"
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
           printf 'no\n' | avdmanager create avd --force --name okg-smoke \
             --package "system-images;android-${{ matrix.api }};google_apis;x86_64"
+          echo 'AVDs visible to Android emulator:'
+          "$ANDROID_HOME/emulator/emulator" -list-avds
+          test -f "$ANDROID_AVD_HOME/okg-smoke.ini"
       - name: Boot emulator and run application smoke checks
         run: |
           mkdir -p emulator-logs
