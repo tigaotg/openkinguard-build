@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
@@ -18,6 +19,7 @@ class MainActivity : ComponentActivity() {
     private var incomingWidgetAction by mutableStateOf<String?>(null)
     private var incomingRemoteInvite by mutableStateOf<String?>(null)
     private var incomingMedicalReminder by mutableStateOf(false)
+    private var startupHealthRevision by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,9 +45,16 @@ class MainActivity : ComponentActivity() {
                     incomingRemoteInvite = incomingRemoteInvite,
                     onRemoteInviteConsumed = { incomingRemoteInvite = null },
                     incomingMedicalReminder = incomingMedicalReminder,
-                    onMedicalReminderConsumed = { incomingMedicalReminder = false })
+                    onMedicalReminderConsumed = { incomingMedicalReminder = false },
+                    startupHealthRevision = startupHealthRevision)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // A real audit runs every foreground entry, including return from Android settings.
+        startupHealthRevision++
     }
 
     override fun onNewIntent(intent: Intent) {

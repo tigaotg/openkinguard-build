@@ -74,7 +74,7 @@ import java.util.Date
 fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     onWidgetActionConsumed: () -> Unit = {}, incomingRemoteInvite: String? = null,
     onRemoteInviteConsumed: () -> Unit = {}, incomingMedicalReminder: Boolean = false,
-    onMedicalReminderConsumed: () -> Unit = {}) {
+    onMedicalReminderConsumed: () -> Unit = {}, startupHealthRevision: Int = 0) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val manager = remember { S1Runtime.manager(context.applicationContext) }
@@ -187,6 +187,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var contactNumber by remember { mutableStateOf("") }
     var identityInfo by remember { mutableStateOf("") }
     var backgroundListening by remember { mutableStateOf(S1Runtime.isBackgroundListening()) }
+    var backgroundReadiness by remember { mutableStateOf<BackgroundReadiness?>(null) }
+    var startupAuditRevision by remember { mutableIntStateOf(0) }
+    var hideStartupWarning by remember { mutableStateOf(false) }
     var liveLocationRelation by remember { mutableStateOf<String?>(null) }
     var liveLocationStatus by remember { mutableStateOf("") }
     var forgetLocationConfirm by remember { mutableStateOf(false) }
@@ -659,6 +662,29 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             delay(if (requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
         }
     }
+    LaunchedEffect(startupHealthRevision, startupAuditRevision) {
+        if (startupHealthRevision == 0 && startupAuditRevision == 0) return@LaunchedEffect
+        hideStartupWarning = false
+        var status = withContext(Dispatchers.IO) { BackgroundStartupCheck.inspect(context) }
+        backgroundReadiness = status
+        if (BackgroundMonitorPolicy.mayAutoRecover(status.consent,
+                status.phase == BackgroundPhase.RUNNING)) {
+            backgroundReadiness = status.copy(phase = BackgroundPhase.RECOVERING)
+            withContext(Dispatchers.IO) { S1LanService.requestAutoRecovery(context) }
+            // startForegroundService() only requests startup; wait for a real scheduler tick.
+            repeat(16) {
+                delay(500)
+                status = withContext(Dispatchers.IO) { BackgroundStartupCheck.inspect(context) }
+                backgroundReadiness = status
+                if (status.phase == BackgroundPhase.RUNNING ||
+                    (status.phase != BackgroundPhase.RECOVERING &&
+                        S1LanService.lastStartupFailure() != null)) return@LaunchedEffect
+            }
+            backgroundReadiness = withContext(Dispatchers.IO) {
+                BackgroundStartupCheck.inspect(context)
+            }
+        }
+    }
     // Android starts/stops foreground services asynchronously. Show the actual runtime
     // state rather than claiming success immediately after startForegroundService().
     LaunchedEffect(backgroundFeedback) {
@@ -1019,6 +1045,45 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                         TextButton(onClick = { showAssistControllerPanel = true }) {
                             Text("查看协助")
+                        }
+                    }
+                }
+            }
+            if (page == 0 && !hideStartupWarning) {
+                backgroundReadiness?.takeIf { it.needsAttention &&
+                    it.phase != BackgroundPhase.RECOVERING }?.let { check ->
+                    ElevatedCard(modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Text(if (check.phase == BackgroundPhase.RUNNING)
+                                "有应用权限需要检查" else "后台监护未正常运行",
+                                style = MaterialTheme.typography.titleMedium)
+                            Text(when (check.phase) {
+                                BackgroundPhase.USER_DISABLED, BackgroundPhase.NOT_ENABLED ->
+                                    "后台监听尚未获您同意或已由您关闭。离开应用后，家人消息接收和在线探测可能中断。"
+                                BackgroundPhase.RUNNING ->
+                                    "监听服务已启动，但部分系统权限或设置可能影响提醒和监护功能。"
+                                else -> "OpenKinGuard 未能自动恢复后台监听。进入后台后，" +
+                                    "家人消息接收和在线探测可能中断，请检查系统后台运行设置。"
+                            }, style = MaterialTheme.typography.bodySmall)
+                            check.advice().take(4).forEach { issue ->
+                                Text("• $issue", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (check.phase != BackgroundPhase.RUNNING) {
+                                Button(modifier = Modifier.fillMaxWidth(), onClick = {
+                                    backgroundFeedback = S1LanService.requestStart(context)
+                                    startupAuditRevision++
+                                }) { Text(if (check.consent == BackgroundConsent.ENABLED)
+                                    "重试自动启动" else "立即开启") }
+                            }
+                            OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                                BackgroundStartupCheck.openBackgroundSettings(context)
+                            }) { Text("检查后台运行设置") }
+                            TextButton(onClick = { hideStartupWarning = true }) {
+                                Text("稍后处理")
+                            }
                         }
                     }
                 }
@@ -2467,6 +2532,50 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     Text("应用所需权限与功能检测", style = MaterialTheme.typography.titleLarge)
                     Text("只有使用对应功能时才需要授权；授权通过也不代表手机一定能联网或定位。",
                         style = MaterialTheme.typography.bodySmall)
+                    backgroundReadiness?.let { check ->
+                        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Text("后台监听状态", style = MaterialTheme.typography.titleMedium)
+                                Text(check.statusLabel)
+                                Text("电池优化：" + if (check.batteryExempt) "已获系统豁免" else
+                                    "仍受系统省电规则管理", style = MaterialTheme.typography.bodySmall)
+                                Text("后台执行：" + if (check.backgroundRestricted)
+                                    "系统报告存在后台限制" else "未报告后台受限",
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("厂商自启动与后台清理：无法自动判断，需要人工检查。" +
+                                    "已开启监听也不代表系统保证始终在线。",
+                                    style = MaterialTheme.typography.bodySmall)
+                                if (check.medicineAlarmRelevant) Text("服药精确提醒：" +
+                                    if (check.exactAlarmAllowed) "精确闹钟可用" else
+                                        "尚未允许精确闹钟，提醒可能延后",
+                                    style = MaterialTheme.typography.bodySmall)
+                                if (check.locationRelevant) Text("家人位置共享所需权限：" +
+                                    if (check.locationGranted) "已授予前台定位权限" else "尚未授予",
+                                    style = MaterialTheme.typography.bodySmall)
+                                if (check.bluetoothRelevant) Text("已开启心率试验所需权限：" +
+                                    if (check.bluetoothGranted) "已授予" else "尚未授予",
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text(check.serviceDetail, style = MaterialTheme.typography.bodySmall)
+                                if (check.phase != BackgroundPhase.RUNNING &&
+                                    check.phase != BackgroundPhase.RECOVERING) {
+                                    Button(modifier = Modifier.fillMaxWidth(), onClick = {
+                                        backgroundFeedback = S1LanService.requestStart(context)
+                                        startupAuditRevision++
+                                    }) { Text(if (check.consent == BackgroundConsent.ENABLED)
+                                        "重试启动监听" else "同意并开启后台监听") }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { startupAuditRevision++ }) {
+                                        Text("重新检查")
+                                    }
+                                    OutlinedButton(onClick = {
+                                        BackgroundStartupCheck.openBackgroundSettings(context)
+                                    }) { Text("系统后台设置") }
+                                }
+                            }
+                        }
+                    }
                     Text("通知：用于 SOS、报平安和连接提醒，不用于广告。",
                         style = MaterialTheme.typography.titleSmall)
                     Text(S1TestNotifier.status(context), style = MaterialTheme.typography.bodySmall)
@@ -2533,20 +2642,20 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     Text("网络：用于局域网发现、公共节点交换连接信息和已绑定手机通信。" +
                         "联网权限在安装时授予，没有单独的系统弹窗。",
                         style = MaterialTheme.typography.bodySmall)
-                    Text("后台连接：" + if (backgroundListening)
-                        "持续监听已开启；通知栏应有常驻提示。" else
-                        "持续监听未开启；离开应用后可能无法收到家人消息。",
+                    Text("后台连接：" + (backgroundReadiness?.statusLabel ?: "正在检测"),
                         style = MaterialTheme.typography.bodySmall)
-                    Text("只在本人点击后启动。断网、系统省电或强制停止仍可能使它中断；" +
-                        "本版不申请后台定位权限。",
+                    Text("首次需要本人同意；同意后，意外停止会在下次打开应用时尝试恢复。" +
+                        "主动关闭后绝不会自动开启；本版不申请后台定位权限。",
                         style = MaterialTheme.typography.bodySmall)
-                    if (backgroundListening) {
+                    if (backgroundReadiness?.consent == BackgroundConsent.ENABLED) {
                         OutlinedButton(onClick = {
                             backgroundFeedback = S1LanService.requestStop(context)
+                            startupAuditRevision++
                         }) { Text("停止持续监听") }
                     } else {
                         Button(onClick = {
                             backgroundFeedback = S1LanService.requestStart(context)
+                            startupAuditRevision++
                         }) { Text("开启持续监听") }
                     }
                     InlineActionFeedback(backgroundFeedback)
@@ -2988,18 +3097,19 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 if (settingsSection == SettingsDestination.BACKGROUND) {
                 HorizontalDivider()
                 Text("后台连接", style = MaterialTheme.typography.titleLarge)
-                Text(if (backgroundListening) "已开启持续通信监听（通知栏有常驻提示）"
-                    else "当前仅在打开应用时监听局域网与已启用的公网中继")
+                Text(backgroundReadiness?.statusLabel ?: "正在检测后台监听")
                 FeatureHelp("手动开启后，可在离开本应用时继续尝试收发签名消息，并按你设置的" +
                     "${snapshot.history.lossWarningMinutes}分钟、${snapshot.history.lossCriticalMinutes}分钟检测失联。" +
                     "此功能不是实时定位或救援保障；系统省电限制、断网或强制停止仍可能中断服务。")
-                if (backgroundListening) {
+                if (backgroundReadiness?.consent == BackgroundConsent.ENABLED) {
                     OutlinedButton(onClick = {
                         backgroundFeedback = S1LanService.requestStop(context)
+                        startupAuditRevision++
                     }) { Text("停止持续监听") }
                 } else {
                     Button(onClick = {
                         backgroundFeedback = S1LanService.requestStart(context)
+                        startupAuditRevision++
                     }) { Text("开启持续监听") }
                 }
                 InlineActionFeedback(backgroundFeedback)
