@@ -150,10 +150,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var editingRelayRemark by rememberSaveable { mutableStateOf<String?>(null) }
     var relayRemarkDraft by rememberSaveable { mutableStateOf("") }
     var relayRemarkFeedback by remember { mutableStateOf("") }
-    val expandedHomeDevices = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedHomeLocations = remember { mutableStateMapOf<String, Boolean>() }
     val expandedHomeCapabilities = remember { mutableStateMapOf<String, Boolean>() }
     val expandedHomeNetworkDetails = remember { mutableStateMapOf<String, Boolean>() }
     val expandedLocationDetails = remember { mutableStateMapOf<String, Boolean>() }
+    var pendingLocationAuthorization by remember { mutableStateOf<SavedPeer?>(null) }
     var showPrivateRelayDetails by rememberSaveable { mutableStateOf(false) }
     var confirmSos by remember { mutableStateOf(false) }
     var confirmCheckin by remember { mutableStateOf(false) }
@@ -761,6 +762,24 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         }.ifBlank {
             "设备 ${fingerprint.take(8)}"
         }
+    pendingLocationAuthorization?.let { peer ->
+        AlertDialog(onDismissRequest = { pendingLocationAuthorization = null },
+            title = { Text("允许这位家人查看我的位置？") },
+            text = { Text("${peerName(peer.relationId, peer.peerFingerprint)} 将可以在你打开 OpenKinGuard 时主动请求一次定位。" +
+                "这不是永久后台定位，你可以随时在“连接家人”中撤销授权。") },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    pendingLocationAuthorization = null
+                    runTask("授权家人查看位置") {
+                        manager.allowLocationToHelper(peer.relationId, true)
+                        "已授权该家人在本机应用打开时请求单次定位"
+                    }
+                }) { Text("允许") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingLocationAuthorization = null }) { Text("取消") }
+            })
+    }
     val activeCaseIds = CurrentEventWindow.currentIds(snapshot.history.cases.map { case ->
         EventSlot(case.eventId, case.subjectFingerprint, case.createdAt,
             case.supersededBy,
@@ -1142,71 +1161,12 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                     else -> "我的救助者"
                                 }, color = MaterialTheme.colorScheme.primary,
                                 style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = {
-                                expandedHomeCapabilities[device.fingerprint] =
-                                    expandedHomeCapabilities[device.fingerprint] != true
-                            }) { Text(if (expandedHomeCapabilities[device.fingerprint] == true)
-                                "收起互助能力 ↑" else "对方能帮我什么？ ↓") }
-                            if (expandedHomeCapabilities[device.fingerprint] == true) {
-                                Surface(shape = MaterialTheme.shapes.medium,
-                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                    modifier = Modifier.fillMaxWidth()) {
-                                    Column(Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        if (subjectPeer == null) {
-                                            Text("○ 对方暂不能作为我的救助者。当前只建立了我帮助对方的关系；可在设备绑定中申请双向互助。",
-                                                style = MaterialTheme.typography.bodySmall)
-                                        } else {
-                                            Text(if (roleOnline(subjectPeer))
-                                                "● 求助与报平安：可向对方发送，收到签名回执才算送达。"
-                                                else "○ 求助与报平安：该帮助关系暂未确认在线，请刷新后再试。",
-                                                style = MaterialTheme.typography.bodySmall)
-                                            val locationAllowed = subjectPeer.relationId in
-                                                snapshot.history.locationSharingRelations
-                                            val localGpsAllowed = manager.locationPermissionGranted()
-                                            Text(when {
-                                                !locationAllowed ->
-                                                    "○ 查看我的位置：我还没有在应用内授权这位家人。"
-                                                !localGpsAllowed ->
-                                                    "○ 查看我的位置：本机未授予 OpenKinGuard 定位权限，请在手机设置中允许。"
-                                                else ->
-                                                    "● 查看我的位置：对方可以申请；我需要打开应用才能响应，且每次均受授权限制。"
-                                            }, style = MaterialTheme.typography.bodySmall)
-                                            Text("● 远程协助：对方可以申请，但必须我逐次同意，且由 Android 授权共享屏幕。",
-                                                style = MaterialTheme.typography.bodySmall)
-                                        }
-                                        if (helperPeer != null) Text(
-                                            "我也可以帮助对方：申请定位或远程协助，仍需对方明确授权。",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        TextButton(onClick = {
-                                            expandedHomeNetworkDetails[device.fingerprint] =
-                                                expandedHomeNetworkDetails[device.fingerprint] != true
-                                        }) { Text(if (expandedHomeNetworkDetails[device.fingerprint] == true)
-                                            "收起网络详情 ↑" else "高级：IP 地址和连接详情 ↓") }
-                                        if (expandedHomeNetworkDetails[device.fingerprint] == true) {
-                                            Text(when {
-                                                directOnline -> "已完成双向 UDP 直连验证。双方可能看到用于连接的网络地址。"
-                                                relayOnline -> "当前经家庭节点通信，不需要先获取对方的公网 IP。尚未确认两机 UDP 直连。"
-                                                else -> "当前通过局域网联系，对方可能看到通信使用的局域网地址。"
-                                            } + "Android 没有单独的‘IP 权限’；公网直连是否可用，取决于网络地址、NAT 和防火墙。",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                    }
-                                }
-                            }
                             if (latestFix != null) Text(
                                 "最近位置 · ${FriendlyElapsedTime.since(latestFix.capturedAtMillis, homeNow)}",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            TextButton(onClick = {
-                                expandedHomeDevices[device.fingerprint] =
-                                    expandedHomeDevices[device.fingerprint] != true
-                            }) { Text(if (expandedHomeDevices[device.fingerprint] == true)
-                                "收起操作 ↑" else "查看可用操作 ↓") }
-                            if (expandedHomeDevices[device.fingerprint] == true) {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("可用操作", style = MaterialTheme.typography.titleSmall)
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (helperPeer != null) {
                                     OutlinedButton(enabled = !busy && roleOnline(helperPeer) &&
                                         assistSession == null,
@@ -1294,18 +1254,21 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                     }) { Text(if (portal == null) "设置找手机入口" else "用厂商服务找手机") }
                                 }
                                 }
-                            if (expandedHomeDevices[device.fingerprint] == true &&
-                                requestingDevice == device.fingerprint)
+                            if (requestingDevice == device.fingerprint)
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            lastLocationRequestAt[device.fingerprint]?.takeIf {
-                                expandedHomeDevices[device.fingerprint] == true
-                            }?.let { requested ->
+                            lastLocationRequestAt[device.fingerprint]?.let { requested ->
                                 Text("上次发起定位请求：${FriendlyElapsedTime.since(requested, homeNow)}" +
                                     if (requestingDevice == device.fingerprint) " · 等待对方回复" else "",
                                     style = MaterialTheme.typography.bodySmall)
                             }
-                            if (latestFix != null &&
-                                expandedHomeDevices[device.fingerprint] == true) {
+                            if (latestFix != null) {
+                                TextButton(onClick = {
+                                    expandedHomeLocations[device.fingerprint] =
+                                        expandedHomeLocations[device.fingerprint] != true
+                                }) { Text(if (expandedHomeLocations[device.fingerprint] == true)
+                                    "收起历史位置 ↑" else "查看历史位置和地图 ↓") }
+                            }
+                            if (latestFix != null && expandedHomeLocations[device.fingerprint] == true) {
                                 val historical = LocationMapPolicy.isHistorical(
                                     latestFix.capturedAtMillis, homeNow)
                                 Text("上次获取的位置：${FriendlyElapsedTime.since(
@@ -1335,6 +1298,90 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                 }
                                 InlineActionFeedback(mapFeedback)
                             }
+                            TextButton(onClick = {
+                                expandedHomeCapabilities[device.fingerprint] =
+                                    expandedHomeCapabilities[device.fingerprint] != true
+                            }) { Text(if (expandedHomeCapabilities[device.fingerprint] == true)
+                                "收起互助能力 ↑" else "对方能帮我什么？ ↓") }
+                            if (expandedHomeCapabilities[device.fingerprint] == true) {
+                                Surface(shape = MaterialTheme.shapes.medium,
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (subjectPeer == null) {
+                                            Row(verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text("○ 对方还不是我的救助者，需先建立双向互助关系。",
+                                                    modifier = Modifier.weight(1f),
+                                                    style = MaterialTheme.typography.bodySmall)
+                                                TextButton(onClick = {
+                                                    showPairingRelations = true
+                                                    navigateTo(1)
+                                                }) { Text("去绑定") }
+                                            }
+                                        } else {
+                                            Row(verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text(if (roleOnline(subjectPeer))
+                                                    "● 求助与报平安：可发送，送达需对方确认。"
+                                                    else "○ 求助与报平安：这条帮助关系还未确认在线。",
+                                                    modifier = Modifier.weight(1f),
+                                                    style = MaterialTheme.typography.bodySmall)
+                                                if (!roleOnline(subjectPeer)) TextButton(onClick = {
+                                                    navigateTo(3)
+                                                    settingsSectionName = SettingsDestination.PRIVATE.name
+                                                }) { Text("检查连接") }
+                                            }
+                                            val locationAllowed = subjectPeer.relationId in
+                                                snapshot.history.locationSharingRelations
+                                            val localGpsAllowed = manager.locationPermissionGranted()
+                                            Row(verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text(when {
+                                                    !localGpsAllowed ->
+                                                        "○ 查看我的位置：本机尚未获得定位权限。"
+                                                    !locationAllowed ->
+                                                        "○ 查看我的位置：我尚未授权这位家人。"
+                                                    else ->
+                                                        "● 查看我的位置：已授权，对方可在我打开应用时申请。"
+                                                }, modifier = Modifier.weight(1f),
+                                                    style = MaterialTheme.typography.bodySmall)
+                                                if (!locationAllowed || !localGpsAllowed) {
+                                                    TextButton(enabled = !busy, onClick = {
+                                                        if (!localGpsAllowed) locationPermission.launch(arrayOf(
+                                                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                                                            Manifest.permission.ACCESS_FINE_LOCATION))
+                                                        else pendingLocationAuthorization = subjectPeer
+                                                    }) { Text("获取权限") }
+                                                }
+                                            }
+                                            if (locationPermissionFeedback.isNotBlank() && !localGpsAllowed)
+                                                InlineActionFeedback(locationPermissionFeedback)
+                                            InlineActionFeedback(actionFeedback["授权家人查看位置"])
+                                            Text("● 远程协助：对方可以申请，但必须我逐次同意，且由 Android 授权共享屏幕。",
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        if (helperPeer != null) Text(
+                                            "我也可以帮助对方：申请定位或远程协助，仍需对方明确授权。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        TextButton(onClick = {
+                                            expandedHomeNetworkDetails[device.fingerprint] =
+                                                expandedHomeNetworkDetails[device.fingerprint] != true
+                                        }) { Text(if (expandedHomeNetworkDetails[device.fingerprint] == true)
+                                            "收起网络详情 ↑" else "高级：IP 地址和连接详情 ↓") }
+                                        if (expandedHomeNetworkDetails[device.fingerprint] == true) {
+                                            Text(when {
+                                                directOnline -> "已完成双向 UDP 直连验证。双方可能看到用于连接的网络地址。"
+                                                relayOnline -> "当前经家庭节点通信，不需要先获取对方的公网 IP。尚未确认两机 UDP 直连。"
+                                                else -> "当前通过局域网联系，对方可能看到通信使用的局域网地址。"
+                                            } + "Android 没有单独的‘IP 权限’；公网直连是否可用，取决于网络地址、NAT 和防火墙。",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
