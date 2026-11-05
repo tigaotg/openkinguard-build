@@ -113,6 +113,26 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
             "${occurrence.medicine.value("name")}：已记录$status（仅保存在本机）"
         }
     }
+    fun openMedicalFile(file: MedicalFile) {
+        background {
+            val suffix = file.name.substringAfterLast('.', "bin")
+                .replace(Regex("[^a-zA-Z0-9]"), "").take(8)
+            val previews = File(context.cacheDir, "medical-preview").apply { mkdirs() }
+            // Decrypted copies are private temporary previews; clean stale ones.
+            previews.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 86_400_000L }
+                ?.forEach { it.delete() }
+            val target = File(previews, "${file.id}.$suffix")
+            target.writeBytes(vault.readFile(file))
+            val uri = FileProvider.getUriForFile(context,
+                "${context.packageName}.medicalfiles", target)
+            withContext(Dispatchers.Main) {
+                context.startActivity(Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, file.mime)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            }
+            "已交给系统文件查看器打开"
+        }
+    }
 
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()) { uri ->
@@ -124,7 +144,11 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
             val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
             val target = attachmentTarget
             val file = vault.addFile(uri, name, mime, target?.first?.key.orEmpty(), target?.second.orEmpty())
-            if (target != null) vault.linkFile(target.first, target.second, file.id)
+            if (target != null) {
+                vault.linkFile(target.first, target.second, file.id)
+                val updated = vault.snapshot().records(target.first).firstOrNull { it.id == target.second }
+                withContext(Dispatchers.Main) { if (updated != null) editing = updated }
+            }
             "已安全导入 ${file.name}，不再依赖原文件的访问权限"
         }
     }
@@ -134,7 +158,11 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
             val target = attachmentTarget
             val item = vault.addFile(uri, "药品或病历照片_${System.currentTimeMillis()}.jpg",
                 "image/jpeg", target?.first?.key.orEmpty(), target?.second.orEmpty())
-            if (target != null) vault.linkFile(target.first, target.second, item.id)
+            if (target != null) {
+                vault.linkFile(target.first, target.second, item.id)
+                val updated = vault.snapshot().records(target.first).firstOrNull { it.id == target.second }
+                withContext(Dispatchers.Main) { if (updated != null) editing = updated }
+            }
             cameraPath?.delete()
             "照片已保存到本机加密档案"
         }
@@ -386,7 +414,9 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
                 if (state.records(kind).any { it.id == current.id }) {
                     Text("关联附件", style = MaterialTheme.typography.titleMedium)
                     current.attachments.forEach { id ->
-                        state.files.firstOrNull { it.id == id }?.let { Text(it.name) }
+                        state.files.firstOrNull { it.id == id }?.let { item ->
+                            TextButton(onClick = { openMedicalFile(item) }) { Text("查看：${item.name}") }
+                        }
                     }
                     OutlinedButton(onClick = {
                         attachmentTarget = kind to current.id
@@ -414,23 +444,7 @@ internal fun MedicalHealthSection(scrollState: ScrollState) {
                         Text(file.name, style = MaterialTheme.typography.titleMedium)
                         Text("${file.mime} · ${file.size / 1024} KB", style = MaterialTheme.typography.bodySmall)
                         Row {
-                            TextButton(onClick = {
-                                background {
-                                    val suffix = file.name.substringAfterLast('.', "bin")
-                                        .replace(Regex("[^a-zA-Z0-9]"), "").take(8)
-                                    val previews = File(context.cacheDir, "medical-preview").apply { mkdirs() }
-                                    val target = File(previews, "${file.id}.$suffix")
-                                    target.writeBytes(vault.readFile(file))
-                                    val uri = FileProvider.getUriForFile(context,
-                                        "${context.packageName}.medicalfiles", target)
-                                    withContext(Dispatchers.Main) {
-                                        context.startActivity(Intent(Intent.ACTION_VIEW)
-                                            .setDataAndType(uri, file.mime)
-                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-                                    }
-                                    "已交给系统文件查看器打开"
-                                }
-                            }) { Text("查看") }
+                            TextButton(onClick = { openMedicalFile(file) }) { Text("查看") }
                             TextButton(onClick = { deleteAttachment = file }) { Text("删除") }
                             TextButton(onClick = {
                                 renameAttachment = file; renameDraft = file.name

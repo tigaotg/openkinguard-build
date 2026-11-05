@@ -84,7 +84,10 @@ internal object MedicalArchive {
 
     fun exportZip(output: OutputStream, state: MedicalState, vault: MedicalVault) {
         ZipOutputStream(output).use { zip ->
+            var rawSize = 0L
             fun write(path: String, bytes: ByteArray) {
+                rawSize += bytes.size
+                require(rawSize <= maxArchive) { "档案超过80 MB安全上限，请分批导出" }
                 zip.putNextEntry(ZipEntry(path))
                 zip.write(bytes)
                 zip.closeEntry()
@@ -247,7 +250,10 @@ internal object MedicalArchive {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key,
             GCMParameterSpec(128, bytes.copyOfRange(offset + 16, offset + 28)))
-        val zip = cipher.doFinal(bytes, offset + 28, bytes.size - offset - 28)
+        val zip = try { cipher.doFinal(bytes, offset + 28, bytes.size - offset - 28) }
+            catch (_: java.security.GeneralSecurityException) {
+                throw IllegalArgumentException("备份密码错误或文件已损坏")
+            }
         return previewZip(ByteArrayInputStream(zip))
     }
 

@@ -2,8 +2,12 @@ package io.github.tigaotg.openkinguard
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MedicalArchiveTest {
     @Test fun portableTextRoundtripDoesNotInventAttachments() {
@@ -34,5 +38,29 @@ class MedicalArchiveTest {
             mapOf(MedicalKind.DOSE to listOf(row))))
         assertTrue(text.contains("\"甲,乙\"\"药\""))
         assertTrue(text.contains("已跳过"))
+    }
+
+    @Test fun standardZipManifestCanBeReadWithoutAnyAppSpecificFormat() {
+        val state = MedicalVault.emptyState().copy(profile = mapOf("name" to "测试用户"))
+        val archive = ByteArrayOutputStream()
+        ZipOutputStream(archive).use { zip ->
+            zip.putNextEntry(ZipEntry("manifest.json"))
+            zip.write(MedicalVault.encode(state).toString().toByteArray())
+            zip.closeEntry()
+        }
+        val restored = MedicalArchive.previewZip(ByteArrayInputStream(archive.toByteArray()))
+        assertEquals("测试用户", restored.state.profile["name"])
+    }
+
+    @Test fun maliciousZipTraversalPathIsRejected() {
+        val archive = ByteArrayOutputStream()
+        ZipOutputStream(archive).use { zip ->
+            zip.putNextEntry(ZipEntry("../outside.txt"))
+            zip.write(byteArrayOf(1, 2, 3))
+            zip.closeEntry()
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            MedicalArchive.previewZip(ByteArrayInputStream(archive.toByteArray()))
+        }
     }
 }
