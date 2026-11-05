@@ -19,6 +19,8 @@ assert_app_alive() {
     sleep 2
   done
   printf 'FAIL: %s: application process is not running\n' "$1" | tee -a "$logs/results.txt"
+  adb shell dumpsys activity activities > "$logs/activities-on-failure.txt" 2>&1 || true
+  adb logcat -d -v threadtime -s AndroidRuntime:E > "$logs/runtime-errors-on-failure.txt" 2>&1 || true
   return 1
 }
 
@@ -30,6 +32,11 @@ start_app() {
 
 printf 'Android emulator API: %s\n' "$api_level" | tee "$logs/results.txt"
 adb install -r "$apk" | tee "$logs/install.txt"
+if (( api_level >= 33 )); then
+  # Remove the first-run system permission sheet from unrelated startup checks.
+  # Later we revoke this permission and explicitly test the denied state.
+  adb shell pm grant "$package" android.permission.POST_NOTIFICATIONS
+fi
 
 # 1. Cold launch; the startup permission and listener checks must not crash.
 start_app 'cold launch'
@@ -48,7 +55,10 @@ start_app 'return from system settings'
 
 # 4. Runtime notification denial is applicable on Android 13+ only.
 if (( api_level >= 33 )); then
-  adb shell pm revoke "$package" android.permission.POST_NOTIFICATIONS || true
+  adb shell pm revoke "$package" android.permission.POST_NOTIFICATIONS
+  # A system permission sheet may remain over the old task; leave it before
+  # starting the app as a fresh explicit user action.
+  adb shell input keyevent KEYCODE_HOME
   adb shell am force-stop "$package"
   start_app 'launch with notifications denied'
 fi
