@@ -136,6 +136,8 @@ data class ExerciseState(
     val ownNicknameCustomized: Boolean = false,
     /** Display-only names for trusted private relays, never sent to those routers. */
     val relayRemarks: Map<String, String> = emptyMap(),
+    /** A subject can deny future remote-assist requests from individual signed helpers. */
+    val remoteAssistBlockedRelations: Set<String> = emptySet(),
 )
 
 /** Transactional encrypted local exercise log. Identity key and pairings are never changed. */
@@ -364,7 +366,11 @@ internal class S1CaseStore(context: Context) {
                 SystemNicknamePolicy.isLegacyCustom(root.optString("ownNickname", "我的设备")),
             relayRemarks = (root.optJSONObject("relayRemarks") ?: JSONObject()).let { notes ->
                 notes.keys().asSequence().take(8).associateWith { notes.optString(it).take(32) }
-            })
+            },
+            remoteAssistBlockedRelations =
+                (root.optJSONArray("remoteAssistBlockedRelations") ?: JSONArray()).let { ids ->
+                    (0 until ids.length()).map { ids.getString(it) }.toSet()
+                })
     }
 
     private fun save(state: ExerciseState) {
@@ -460,6 +466,8 @@ internal class S1CaseStore(context: Context) {
             state.lastNotifiedLossStage.forEach { (relation, stage) -> put(relation, stage) }
         })
         root.put("locationSharingRelations", JSONArray(state.locationSharingRelations.toList()))
+        root.put("remoteAssistBlockedRelations",
+            JSONArray(state.remoteAssistBlockedRelations.toList()))
         root.put("receivedLocations", JSONArray().apply {
             state.receivedLocations.takeLast(200).forEach { fix ->
                 put(JSONObject().put("relation", fix.relationId)

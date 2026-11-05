@@ -336,7 +336,8 @@ class S1GuardManager(context: Context) {
     internal fun authorizedRemoteControl(sessionId: String): Boolean =
         remoteAssistConsent.snapshot()?.let { it.sessionId == sessionId &&
             it.direction == RemoteAssistConsent.Direction.INCOMING &&
-            it.phase == RemoteAssistConsent.Phase.ACTIVE } == true
+            it.phase == RemoteAssistConsent.Phase.ACTIVE &&
+            remoteAssistRequestsAllowed(it.relationId) } == true
 
     internal fun startRemoteRtcScreen(sessionId: String, resultData: Intent,
                                       width: Int, height: Int) {
@@ -504,6 +505,9 @@ class S1GuardManager(context: Context) {
             it.peerFingerprint == session.peerFingerprint &&
             it.role == PairingRole.SUBJECT }
             ?: throw IllegalArgumentException("家人关系已经撤销")
+        if (approve) require(remoteAssistRequestsAllowed(session.relationId)) {
+            "你已取消这位家人的远程协助权限，请先在主页恢复允许"
+        }
         remoteAssistConsent.localDecision(session.sessionId, approve)
         if (approve) lastAssistExitNotice = null
         if (approve) RemoteAssistDiagnostics.begin("被控制端")
@@ -819,6 +823,7 @@ class S1GuardManager(context: Context) {
     }
 
     fun revokeRelation(relationId: String) {
+        if (remoteAssistConsent.snapshot()?.relationId == relationId) stopRemoteAssist()
         val revoked = relations().firstOrNull { it.relationId == relationId }
         pairings.revoke(relationId) // Local-only. The other device is not silently modified.
         verified.remove(relationId)
@@ -827,6 +832,7 @@ class S1GuardManager(context: Context) {
                 lastVerifiedAt = state.lastVerifiedAt - relationId,
                 lastNotifiedLossStage = state.lastNotifiedLossStage - relationId,
                 locationSharingRelations = state.locationSharingRelations - relationId,
+                remoteAssistBlockedRelations = state.remoteAssistBlockedRelations - relationId,
                 safetyZones = if (revoked != null &&
                     relations().none { it.peerFingerprint == revoked.peerFingerprint &&
                         it.role == PairingRole.HELPER })
@@ -894,6 +900,29 @@ class S1GuardManager(context: Context) {
         }
         store.recordHandshake("定位授权", if (allowed) "LOCATION_ON" else "LOCATION_OFF",
             relationId, "本机确认", "仅前台单次签名定位请求；未授权后台追踪")
+        signal()
+    }
+
+    /** This opt-out persists locally and blocks future signed REQUEST frames from this helper. */
+    fun remoteAssistRequestsAllowed(relationId: String): Boolean =
+        RemoteAssistPermissionPolicy.allowed(
+            store.snapshot().remoteAssistBlockedRelations, relationId)
+
+    @Synchronized fun setRemoteAssistRequestsAllowed(relationId: String, allowed: Boolean) {
+        require(relations().any { it.relationId == relationId &&
+            it.role == PairingRole.SUBJECT }) { "只能修改已绑定救助者的远程协助权限" }
+        store.update { state ->
+            state.copy(remoteAssistBlockedRelations = RemoteAssistPermissionPolicy.withPermission(
+                state.remoteAssistBlockedRelations, relationId, allowed)) to Unit
+        }
+        if (!allowed) {
+            val active = remoteAssistConsent.snapshot()
+            if (active != null && active.relationId == relationId &&
+                active.direction == RemoteAssistConsent.Direction.INCOMING) stopRemoteAssist()
+        }
+        store.recordHandshake("协助授权", if (allowed) "ASSIST_ON" else "ASSIST_OFF",
+            relationId, "本机确认", if (allowed) "允许再次申请；每次仍需人工确认和系统共享授权" else
+                "已禁止该帮助关系的远程协助申请并撤销本次授权")
         signal()
     }
 
@@ -2425,17 +2454,22 @@ class S1GuardManager(context: Context) {
                     (peer.relationId to System.currentTimeMillis()),
                     lastNotifiedLossStage = state.lastNotifiedLossStage - peer.relationId) to true
         }
+        var declineBlockedRequest = false
         if (fresh) when (msg.payloadKind) {
             RemoteAssistWire.REQUEST -> {
-                val previous = remoteAssistConsent.snapshot()
-                val accepted = remoteAssistConsent.receiveRequest(
-                    peer.relationId, peer.peerFingerprint, body.sessionId)
-                if (accepted) lastAssistExitNotice = null
-                if (accepted && previous != null && previous.sessionId != body.sessionId) {
-                    // An old projection must not survive a newly requested session.
-                    closeRemoteRtc()
-                    remoteStreamReplay.clear()
-                    app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
+                if (!remoteAssistRequestsAllowed(peer.relationId)) {
+                    declineBlockedRequest = true
+                } else {
+                    val previous = remoteAssistConsent.snapshot()
+                    val accepted = remoteAssistConsent.receiveRequest(
+                        peer.relationId, peer.peerFingerprint, body.sessionId)
+                    if (accepted) lastAssistExitNotice = null
+                    if (accepted && previous != null && previous.sessionId != body.sessionId) {
+                        // A new session must never reuse an old projection grant.
+                        closeRemoteRtc()
+                        remoteStreamReplay.clear()
+                        app.stopService(Intent(app, RemoteAssistProjectionService::class.java))
+                    }
                 }
             }
             // An unseen request may wait in memory for up to 60 seconds, but
@@ -2458,6 +2492,9 @@ class S1GuardManager(context: Context) {
             RemoteAssistWire.receipt(peer.relationId, body.sessionId, msg.messageId.value))
         writePacket(socket, LanTestWire.encode(reply))
         signal()
+        if (declineBlockedRequest) Thread({
+            runCatching { sendRemoteAssistControl(peer, RemoteAssistWire.DECLINE, body.sessionId) }
+        }, "okg-assist-blocked-decline").apply { isDaemon = true; start() }
     }
 
     /** Sidecar only: signed fragments/gestures are gated by this exact live session. */
@@ -2475,6 +2512,8 @@ class S1GuardManager(context: Context) {
         require(session != null && session.relationId == packet.relationId &&
             session.peerFingerprint == peer.peerFingerprint &&
             session.sessionId == packet.sessionId &&
+            (session.direction != RemoteAssistConsent.Direction.INCOMING ||
+                remoteAssistRequestsAllowed(session.relationId)) &&
             (if (fromSubject) session.direction == RemoteAssistConsent.Direction.OUTGOING &&
                 session.phase in setOf(RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
                     RemoteAssistConsent.Phase.ACTIVE)

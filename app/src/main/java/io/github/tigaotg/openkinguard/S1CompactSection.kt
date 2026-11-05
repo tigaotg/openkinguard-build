@@ -155,6 +155,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     val expandedHomeNetworkDetails = remember { mutableStateMapOf<String, Boolean>() }
     val expandedLocationDetails = remember { mutableStateMapOf<String, Boolean>() }
     var pendingLocationAuthorization by remember { mutableStateOf<SavedPeer?>(null) }
+    var inspectingRemoteAssistPermission by remember { mutableStateOf<SavedPeer?>(null) }
     var showPrivateRelayDetails by rememberSaveable { mutableStateOf(false) }
     var confirmSos by remember { mutableStateOf(false) }
     var confirmCheckin by remember { mutableStateOf(false) }
@@ -780,6 +781,42 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 TextButton(onClick = { pendingLocationAuthorization = null }) { Text("取消") }
             })
     }
+    inspectingRemoteAssistPermission?.let { peer ->
+        val permitted = manager.remoteAssistRequestsAllowed(peer.relationId)
+        val accessibilityReady = RemoteAssistGestureService.enabled()
+        val active = manager.remoteAssistSession()?.let {
+            it.relationId == peer.relationId &&
+                it.direction == RemoteAssistConsent.Direction.INCOMING &&
+                it.phase == RemoteAssistConsent.Phase.ACTIVE
+        } == true
+        AlertDialog(onDismissRequest = { inspectingRemoteAssistPermission = null },
+            title = { Text("远程协助权限检查") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("家人：${peerName(peer.relationId, peer.peerFingerprint)}")
+                    Text(if (permitted) "● 应用内权限：允许这位家人提出协助请求"
+                        else "○ 应用内权限：已禁止这位家人提出协助请求")
+                    Text(if (active) "● 本次屏幕共享：正在进行"
+                        else "○ 本次屏幕共享：尚未开启；每次都需本人点击同意和安卓系统授权")
+                    Text(if (accessibilityReady)
+                        "● 远程操作：本机辅助功能已启用"
+                        else "○ 远程操作：本机辅助功能未启用，可能只能看屏幕，无法点击操作")
+                    Text("取消应用内权限不会关闭手机系统的辅助功能，但会拒绝这位家人以后发起的协助。",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    inspectingRemoteAssistPermission = null
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }) { Text("辅助功能设置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { inspectingRemoteAssistPermission = null }) {
+                    Text("关闭")
+                }
+            })
+    }
     val activeCaseIds = CurrentEventWindow.currentIds(snapshot.history.cases.map { case ->
         EventSlot(case.eventId, case.subjectFingerprint, case.createdAt,
             case.supersededBy,
@@ -1389,21 +1426,40 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                                         RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION,
                                                         RemoteAssistConsent.Phase.ACTIVE)
                                             } == true
+                                            val assistAllowed = subjectPeer.relationId !in
+                                                snapshot.history.remoteAssistBlockedRelations
                                             Row(verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                Text(if (activeIncomingAssist)
-                                                    "● 远程协助：这位家人已获得本次同意。"
-                                                    else "● 远程协助：每次都需要本人和安卓系统授权。",
+                                                Text(if (!assistAllowed)
+                                                    "○ 远程协助：已禁止这位家人申请。"
+                                                    else if (activeIncomingAssist)
+                                                        "● 远程协助：这位家人已获得本次同意。"
+                                                    else "● 远程协助：允许申请，每次仍需本人和安卓授权。",
                                                     modifier = Modifier.weight(1f),
                                                     style = MaterialTheme.typography.bodySmall)
-                                                if (activeIncomingAssist) TextButton(enabled = !busy,
-                                                    onClick = {
-                                                        runTask("撤销本次远程协助") {
-                                                            manager.stopRemoteAssist()
-                                                            "已撤销本次远程协助，屏幕共享已停止"
+                                                Column(horizontalAlignment = Alignment.End) {
+                                                    TextButton(onClick = {
+                                                        inspectingRemoteAssistPermission = subjectPeer
+                                                    }) { Text("检查权限") }
+                                                    TextButton(enabled = !busy, onClick = {
+                                                        runTask("更改远程协助权限") {
+                                                            manager.setRemoteAssistRequestsAllowed(
+                                                                subjectPeer.relationId, !assistAllowed)
+                                                            if (assistAllowed)
+                                                                "已取消这位家人的远程协助权限；正在进行的共享也已结束"
+                                                            else "已恢复允许申请；每次仍需本人同意与系统授权"
                                                         }
-                                                    }) { Text("撤销本次授权") }
+                                                    }) { Text(if (assistAllowed) "取消权限" else "恢复允许") }
+                                                }
                                             }
+                                            if (activeIncomingAssist && assistAllowed) TextButton(
+                                                enabled = !busy, onClick = {
+                                                    runTask("撤销本次远程协助") {
+                                                        manager.stopRemoteAssist()
+                                                        "已撤销本次远程协助，屏幕共享已停止"
+                                                    }
+                                                }) { Text("仅结束本次协助") }
+                                            InlineActionFeedback(actionFeedback["更改远程协助权限"])
                                             InlineActionFeedback(actionFeedback["撤销本次远程协助"])
                                         }
                                         if (subjectPeer != null) TextButton(onClick = {
@@ -2423,6 +2479,18 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }) { Text("检测本机 GPS 和当前位置（最多 10 秒）") }
                     InlineActionFeedback(actionFeedback["本机GPS与位置自检"])
                     FeatureHelp("GPS 检测结果只在本机显示，不会自动发送给已绑定的人。")
+                    HorizontalDivider()
+                    Text("远程协助：每次屏幕共享都需要本人同意并通过安卓系统弹窗确认。",
+                        style = MaterialTheme.typography.titleSmall)
+                    Text(if (RemoteAssistGestureService.enabled())
+                        "辅助功能已启用：本机可在本次同意后响应远程点击操作。"
+                        else "辅助功能未启用：可能只能共享画面，无法接受对方点击操作。",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }) { Text("检查远程操作辅助功能") }
+                    FeatureHelp("安卓屏幕共享许可不能长期预授权；即使辅助功能已开启，" +
+                        "未取得这一次共享许可的家人也无法查看或控制你的屏幕。")
                     HorizontalDivider()
                     Text("相机：只用于你主动扫描手机绑定和家庭节点二维码。",
                         style = MaterialTheme.typography.titleSmall)
