@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 65
-        versionName = "0.9.30-crosswan-rtc-signaling"
+        versionCode = 66
+        versionName = "0.9.31-home-family-ui"
     }
 
     buildTypes {

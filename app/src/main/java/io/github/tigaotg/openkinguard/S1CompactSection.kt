@@ -48,6 +48,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.tigaotg.openkinguard.core.engine.CommandFailureExplainer
+import io.github.tigaotg.openkinguard.core.engine.CommandFailureExplanation
 import io.github.tigaotg.openkinguard.core.engine.FriendlyElapsedTime
 import io.github.tigaotg.openkinguard.core.engine.HomeDevicePolicy
 import io.github.tigaotg.openkinguard.core.engine.HomeRolePresence
@@ -150,6 +151,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var relayRemarkDraft by rememberSaveable { mutableStateOf("") }
     var relayRemarkFeedback by remember { mutableStateOf("") }
     val expandedHomeDevices = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedHomeCapabilities = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedHomeNetworkDetails = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedLocationDetails = remember { mutableStateMapOf<String, Boolean>() }
+    var showPrivateRelayDetails by rememberSaveable { mutableStateOf(false) }
     var confirmSos by remember { mutableStateOf(false) }
     var confirmCheckin by remember { mutableStateOf(false) }
     var closing by remember { mutableStateOf<String?>(null) }
@@ -552,6 +557,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         else launchMapLocation(fix, domestic)
     }
     fun runTask(label: String, inlineResult: ((String) -> Unit)? = null,
+                friendlyFailure: ((CommandFailureExplanation) -> String)? = null,
+                onFailureDetail: ((String) -> Unit)? = null,
                 action: () -> String) {
         if (busy) return
         busy = true
@@ -559,6 +566,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         else actionFeedback[label] = "$label…"
         Thread({
             val output = runCatching(action)
+            var technicalFailure = ""
             val resultMessage = output.fold(onSuccess = { result ->
                 val waiting = listOf("等待确认", "未确认", "未获对方确认", "仍有待", "尚有待", "仍待确认")
                     .any { result.contains(it) }
@@ -570,11 +578,13 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 result
             }, onFailure = { error ->
                 val explanation = CommandFailureExplainer.explain(error)
+                technicalFailure = "${explanation.code}：${explanation.message}"
                 runCatching { manager.recordCommandResult(label, "失败",
                     explanation.code, explanation.message) }
-                "$label 失败：${explanation.message}"
+                friendlyFailure?.invoke(explanation) ?: "$label 失败：${explanation.message}"
             })
             handler.post {
+                onFailureDetail?.invoke(technicalFailure)
                 if (inlineResult != null) inlineResult(resultMessage)
                 else actionFeedback[label] = resultMessage
                 busy = false
@@ -1086,61 +1096,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
             }
             if (page == 0) {
-                // Always put the offline-device entry above the potentially long online list.
-                // The source is the saved pairing relation list, never unpaired LAN discoveries.
-                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth()
-                            .clickable { showOfflineDevices = !showOfflineDevices }
-                            .padding(horizontal = 14.dp, vertical = 14.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column(Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text("未在线家人（${offlineHomeDevices.size} 台）",
-                                    style = MaterialTheme.typography.titleMedium)
-                            }
-                            Text(if (showOfflineDevices) "收起 ↑" else "查看 ›",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary)
-                        }
-                        if (showOfflineDevices) {
-                            HorizontalDivider()
-                            if (offlineHomeDevices.isEmpty()) {
-                                Text("当前没有未在线的已绑定设备。",
-                                    modifier = Modifier.padding(14.dp),
-                                    style = MaterialTheme.typography.bodyMedium)
-                            }
-                            offlineHomeDevices.forEachIndexed { index, device ->
-                                if (index > 0) HorizontalDivider()
-                                val members = relations.filter {
-                                    it.peerFingerprint == device.fingerprint }
-                                val peer = members.first()
-                                val lastSeen = members.mapNotNull {
-                                    snapshot.history.lastVerifiedAt[it.relationId]
-                                }.maxOrNull()
-                                val roles = members.map { it.role }.toSet()
-                                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp,
-                                    vertical = 12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text(peerName(peer.relationId, device.fingerprint),
-                                        style = MaterialTheme.typography.titleMedium)
-                                    Text("○ 当前未确认在线 · " + when {
-                                        PairingRole.HELPER in roles && PairingRole.SUBJECT in roles ->
-                                            "双向互助"
-                                        PairingRole.HELPER in roles -> "我的被救助者"
-                                        else -> "我的救助者"
-                                    }, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        style = MaterialTheme.typography.bodySmall)
-                                    Text(lastSeen?.let {
-                                        "上次验签在线：${FriendlyElapsedTime.since(it, homeNow)}"
-                                    } ?: "尚无签名在线记录",
-                                        style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                        }
-                    }
-                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically) {
                     Text("在线家人", style = MaterialTheme.typography.titleMedium,
@@ -1187,6 +1142,60 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                     else -> "我的救助者"
                                 }, color = MaterialTheme.colorScheme.primary,
                                 style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = {
+                                expandedHomeCapabilities[device.fingerprint] =
+                                    expandedHomeCapabilities[device.fingerprint] != true
+                            }) { Text(if (expandedHomeCapabilities[device.fingerprint] == true)
+                                "收起互助能力 ↑" else "对方能帮我什么？ ↓") }
+                            if (expandedHomeCapabilities[device.fingerprint] == true) {
+                                Surface(shape = MaterialTheme.shapes.medium,
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (subjectPeer == null) {
+                                            Text("○ 对方暂不能作为我的救助者。当前只建立了我帮助对方的关系；可在设备绑定中申请双向互助。",
+                                                style = MaterialTheme.typography.bodySmall)
+                                        } else {
+                                            Text(if (roleOnline(subjectPeer))
+                                                "● 求助与报平安：可向对方发送，收到签名回执才算送达。"
+                                                else "○ 求助与报平安：该帮助关系暂未确认在线，请刷新后再试。",
+                                                style = MaterialTheme.typography.bodySmall)
+                                            val locationAllowed = subjectPeer.relationId in
+                                                snapshot.history.locationSharingRelations
+                                            val localGpsAllowed = manager.locationPermissionGranted()
+                                            Text(when {
+                                                !locationAllowed ->
+                                                    "○ 查看我的位置：我还没有在应用内授权这位家人。"
+                                                !localGpsAllowed ->
+                                                    "○ 查看我的位置：本机未授予 OpenKinGuard 定位权限，请在手机设置中允许。"
+                                                else ->
+                                                    "● 查看我的位置：对方可以申请；我需要打开应用才能响应，且每次均受授权限制。"
+                                            }, style = MaterialTheme.typography.bodySmall)
+                                            Text("● 远程协助：对方可以申请，但必须我逐次同意，且由 Android 授权共享屏幕。",
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        if (helperPeer != null) Text(
+                                            "我也可以帮助对方：申请定位或远程协助，仍需对方明确授权。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        TextButton(onClick = {
+                                            expandedHomeNetworkDetails[device.fingerprint] =
+                                                expandedHomeNetworkDetails[device.fingerprint] != true
+                                        }) { Text(if (expandedHomeNetworkDetails[device.fingerprint] == true)
+                                            "收起网络详情 ↑" else "高级：IP 地址和连接详情 ↓") }
+                                        if (expandedHomeNetworkDetails[device.fingerprint] == true) {
+                                            Text(when {
+                                                directOnline -> "已完成双向 UDP 直连验证。双方可能看到用于连接的网络地址。"
+                                                relayOnline -> "当前经家庭节点通信，不需要先获取对方的公网 IP。尚未确认两机 UDP 直连。"
+                                                else -> "当前通过局域网联系，对方可能看到通信使用的局域网地址。"
+                                            } + "Android 没有单独的‘IP 权限’；公网直连是否可用，取决于网络地址、NAT 和防火墙。",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+                            }
                             if (latestFix != null) Text(
                                 "最近位置 · ${FriendlyElapsedTime.since(latestFix.capturedAtMillis, homeNow)}",
                                 style = MaterialTheme.typography.labelMedium,
@@ -1239,12 +1248,28 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         requestingDevice = device.fingerprint
                                         runTask("请求对方的位置", inlineResult = {
                                             deviceFeedback["${device.fingerprint}:location"] = it
+                                        }, friendlyFailure = { explanation ->
+                                            LocationActionPresentation.message(explanation.code)
+                                        }, onFailureDetail = { detail ->
+                                            deviceFeedback["${device.fingerprint}:location:technical"] = detail
+                                            expandedLocationDetails[device.fingerprint] = false
                                         }) {
                                             val fix = manager.requestRemoteLocation(helperPeer.relationId)
                                             "${peerName(helperPeer.relationId, device.fingerprint)}：${formatLocation(fix)}"
                                         }
                                     }) { Text("请求对方位置") }
                                     InlineActionFeedback(deviceFeedback["${device.fingerprint}:location"])
+                                    deviceFeedback["${device.fingerprint}:location:technical"]
+                                        ?.takeIf { it.isNotBlank() }?.let { technical ->
+                                            TextButton(onClick = {
+                                                expandedLocationDetails[device.fingerprint] =
+                                                    expandedLocationDetails[device.fingerprint] != true
+                                            }) { Text(if (expandedLocationDetails[device.fingerprint] == true)
+                                                "收起高级信息 ↑" else "高级：查看详细原因 ↓") }
+                                            if (expandedLocationDetails[device.fingerprint] == true)
+                                                Text(technical, style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
                                 }
                                 if (subjectPeer != null) {
                                     OutlinedButton(enabled = !busy,
@@ -1268,9 +1293,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         } else selectedFindPortal = portal
                                     }) { Text(if (portal == null) "设置找手机入口" else "用厂商服务找手机") }
                                 }
-                                FeatureHelp("远程协助要求对方逐次同意并允许 Android 屏幕共享；" +
-                                    "控制操作还需要辅助功能授权。定位需要对方授权，显示的是最近验签位置；" +
-                                    "报平安须收到签名回执才算送达。", label = "家人操作说明")
                                 }
                             if (expandedHomeDevices[device.fingerprint] == true &&
                                 requestingDevice == device.fingerprint)
@@ -1313,6 +1335,61 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                 }
                                 InlineActionFeedback(mapFeedback)
                             }
+                            }
+                        }
+                    }
+                }
+                // Keep offline relatives below the online list; collapse them by default.
+                // The source is the saved pairing relation list, never unpaired LAN discoveries.
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth()
+                            .clickable { showOfflineDevices = !showOfflineDevices }
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column(Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("未在线家人（${offlineHomeDevices.size} 台）",
+                                    style = MaterialTheme.typography.titleMedium)
+                            }
+                            Text(if (showOfflineDevices) "收起 ↑" else "查看 ›",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                        if (showOfflineDevices) {
+                            HorizontalDivider()
+                            if (offlineHomeDevices.isEmpty()) {
+                                Text("当前没有未在线的已绑定设备。",
+                                    modifier = Modifier.padding(14.dp),
+                                    style = MaterialTheme.typography.bodyMedium)
+                            }
+                            offlineHomeDevices.forEachIndexed { index, device ->
+                                if (index > 0) HorizontalDivider()
+                                val members = relations.filter {
+                                    it.peerFingerprint == device.fingerprint }
+                                val peer = members.first()
+                                val lastSeen = members.mapNotNull {
+                                    snapshot.history.lastVerifiedAt[it.relationId]
+                                }.maxOrNull()
+                                val roles = members.map { it.role }.toSet()
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp,
+                                    vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(peerName(peer.relationId, device.fingerprint),
+                                        style = MaterialTheme.typography.titleMedium)
+                                    Text("○ 当前未确认在线 · " + when {
+                                        PairingRole.HELPER in roles && PairingRole.SUBJECT in roles ->
+                                            "双向互助"
+                                        PairingRole.HELPER in roles -> "我的被救助者"
+                                        else -> "我的救助者"
+                                    }, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall)
+                                    Text(lastSeen?.let {
+                                        "上次验签在线：${FriendlyElapsedTime.since(it, homeNow)}"
+                                    } ?: "尚无签名在线记录",
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
@@ -2565,8 +2642,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
                 }
                 if (settingsSection == SettingsDestination.PRIVATE) {
-                Text("扫码加入自己管理的路由器；若路由器此前已批准本机，重新扫码会直接验证已有授权，无需再次人工批准。",
-                    style = MaterialTheme.typography.bodyMedium)
+                Text("扫码即可添加或重新验证家庭节点。",
+                    style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(enabled = !relayJoinInProgress, onClick = {
                         relayJoinScanner.launch(ScanOptions()
@@ -2588,6 +2665,12 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
                 InlineActionFeedback(privateJoinFeedback)
                 val routerRevokedThisDevice = snapshot.relayStatus.contains("路由器端未绑定您")
+                val relayBanner = FamilyConnectionPresentation.banner(
+                    saved = snapshot.history.relayEndpoint.isNotBlank(),
+                    enabled = snapshot.history.relayEnabled,
+                    listening = snapshot.listening,
+                    connected = snapshot.relayConnected,
+                    revoked = routerRevokedThisDevice)
                 Surface(shape = MaterialTheme.shapes.large,
                     color = if (routerRevokedThisDevice) MaterialTheme.colorScheme.errorContainer
                         else if (snapshot.relayConnected) MaterialTheme.colorScheme.primaryContainer
@@ -2595,15 +2678,20 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(if (routerRevokedThisDevice) "有家庭节点已取消本机授权"
-                            else if (snapshot.relayConnected) "● 已连接私人中继"
-                            else "○ 私人中继未连接",
-                            style = MaterialTheme.typography.titleMedium)
-                        Text(snapshot.relayStatus, style = MaterialTheme.typography.bodySmall)
-                        if (routerRevokedThisDevice) Text(
-                            "可联系路由器管理员在“已取消设备”中点击“重新授权”。" +
-                                "这不会删除你手机里已经绑定的家人。",
-                            style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (relayBanner.attempting) CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text(relayBanner.title, style = MaterialTheme.typography.titleMedium)
+                        }
+                        Text(relayBanner.instruction, style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            showPrivateRelayDetails = !showPrivateRelayDetails
+                        }) { Text(if (showPrivateRelayDetails) "收起连接详情 ↑"
+                            else "高级：查看连接详情 ↓") }
+                        if (showPrivateRelayDetails) Text(snapshot.relayStatus,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 val savedPrivateRelays = snapshot.history.relayEndpoint.lines()
