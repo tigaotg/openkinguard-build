@@ -14,9 +14,10 @@ object RemoteAssistStreamWire {
     const val SWIPE = "OKG_REMOTE_SWIPE_V1"
     const val BACK = "OKG_REMOTE_BACK_V1"
     const val HOME = "OKG_REMOTE_HOME_V1"
+    const val RECENTS = "OKG_REMOTE_RECENTS_V1"
     const val DIAGNOSTIC = "OKG_REMOTE_DIAG_V1"
     const val ACK = "OKG_REMOTE_STREAM_ACK_V1"
-    val requestKinds = setOf(RTC, TAP, SWIPE, BACK, HOME, DIAGNOSTIC)
+    val requestKinds = setOf(RTC, TAP, SWIPE, BACK, HOME, RECENTS, DIAGNOSTIC)
     val kinds = requestKinds + ACK
 
     data class Packet(
@@ -53,8 +54,9 @@ object RemoteAssistStreamWire {
     }
 
     fun action(relationId: String, sessionId: String, kind: String): ByteArray {
-        require(kind == BACK || kind == HOME)
-        return "${if (kind == BACK) "B" else "H"}|${uuid(relationId)}|${uuid(sessionId)}"
+        require(kind == BACK || kind == HOME || kind == RECENTS)
+        val prefix = when (kind) { BACK -> "B"; HOME -> "H"; else -> "M" }
+        return "$prefix|${uuid(relationId)}|${uuid(sessionId)}"
             .toByteArray(Charsets.US_ASCII)
     }
 
@@ -86,11 +88,11 @@ object RemoteAssistStreamWire {
         val parts = message.payload.toString(Charsets.US_ASCII).split('|')
         val expected = when (message.payloadKind) {
             RTC -> "R"; TAP -> "T"; SWIPE -> "W"; BACK -> "B"
-            HOME -> "H"; DIAGNOSTIC -> "D"; else -> "A"
+            HOME -> "H"; RECENTS -> "M"; DIAGNOSTIC -> "D"; else -> "A"
         }
         require(parts.firstOrNull() == expected) { "Packet kind mismatch" }
         require(parts.size == when (message.payloadKind) {
-            RTC -> 8; TAP -> 5; SWIPE -> 8; BACK, HOME -> 3; else -> 4
+            RTC -> 8; TAP -> 5; SWIPE -> 8; BACK, HOME, RECENTS -> 3; else -> 4
         }) { "Invalid packet fields" }
         val relation = uuid(parts[1])
         val session = uuid(parts[2])

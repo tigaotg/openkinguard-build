@@ -81,7 +81,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     val handler = remember { Handler(Looper.getMainLooper()) }
     var snapshot by remember { mutableStateOf(manager.snapshot()) }
     var assistSession by remember { mutableStateOf(manager.remoteAssistSession()) }
-    var assistVideoSize by remember { mutableStateOf(manager.remoteAssistRtcSize()) }
     var assistStartFeedback by remember { mutableStateOf("") }
     var assistTransferStatus by remember {
         mutableStateOf(RemoteAssistProjectionService.currentTransferStatus())
@@ -89,7 +88,6 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var showAssistControllerPanel by remember { mutableStateOf(false) }
     var showAssistDiagnostics by remember { mutableStateOf(false) }
     var assistDiagnosticText by remember { mutableStateOf("") }
-    var diagnosticAutomaticallyShownSession by remember { mutableStateOf("") }
     val sharePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()) { result ->
         val permission = result.data
@@ -208,25 +206,25 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     // strands an older phone halfway down a newly opened settings screen.
     LaunchedEffect(page, settingsSectionName) { pageScroll.scrollTo(0) }
 
-    // A helper's response should never disappear inside a collapsed device card.
-    // Reopen on each actual phase transition, but respect an explicit minimize.
-    LaunchedEffect(assistSession?.sessionId, assistSession?.phase) {
+    // Launch the separate fullscreen controller once per new outgoing session.
+    // Closing it does not revoke authorization; it can be reopened manually.
+    LaunchedEffect(assistSession?.sessionId) {
         showAssistControllerPanel =
             assistSession?.direction == RemoteAssistConsent.Direction.OUTGOING
     }
-    // A one-time diagnostic after enough samples have accumulated, not an alert
-    // that repeats on every 180 ms UI refresh.
-    LaunchedEffect(assistSession?.sessionId, assistSession?.phase) {
-        val active = assistSession?.takeIf {
-            it.direction == RemoteAssistConsent.Direction.OUTGOING &&
-                it.phase == RemoteAssistConsent.Phase.ACTIVE
-        } ?: return@LaunchedEffect
-        if (diagnosticAutomaticallyShownSession == active.sessionId) return@LaunchedEffect
-        delay(14_000)
-        if (manager.remoteAssistSession()?.sessionId == active.sessionId) {
-            diagnosticAutomaticallyShownSession = active.sessionId
-            assistDiagnosticText = manager.remoteAssistDiagnosticReport()
-            showAssistDiagnostics = true
+    LaunchedEffect(showAssistControllerPanel, assistSession?.sessionId) {
+        val session = assistSession?.takeIf {
+            it.direction == RemoteAssistConsent.Direction.OUTGOING
+        }
+        if (showAssistControllerPanel && session != null) {
+            showAssistControllerPanel = false
+            runCatching {
+                context.startActivity(Intent(context, RemoteAssistControllerActivity::class.java)
+                    .putExtra(RemoteAssistControllerActivity.EXTRA_SESSION_ID, session.sessionId))
+            }.onFailure {
+                Toast.makeText(context, "无法打开远程控制：${it.javaClass.simpleName}",
+                    Toast.LENGTH_LONG).show()
+            }
         }
     }
     // One lightweight in-memory refresh per second while assisting; never poll
@@ -235,10 +233,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         while (true) {
             val current = manager.remoteAssistSession()
             assistSession = current
-            assistVideoSize = manager.remoteAssistRtcSize()
             assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             if (current == null) break
-            delay(if (current.direction == RemoteAssistConsent.Direction.OUTGOING) 180 else 500)
+            delay(500)
         }
     }
 
@@ -829,118 +826,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             }) { Text("取消协助") } })
     }
 
-    // The control screen lives outside the per-device expand/collapse state.
-    // It is opened immediately after sending a request and again on consent/frame transitions.
-    assistSession?.takeIf { it.direction == RemoteAssistConsent.Direction.OUTGOING &&
-        showAssistControllerPanel }?.let { session ->
-        Dialog(onDismissRequest = { showAssistControllerPanel = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(modifier = Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.94f),
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surface) {
-                Column(Modifier.fillMaxSize().padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("远程协助 · ${peerName(session.relationId, session.peerFingerprint)}",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium)
-                        TextButton(onClick = {
-                            assistDiagnosticText = manager.remoteAssistDiagnosticReport()
-                            showAssistDiagnostics = true
-                        }) { Text("诊断") }
-                        TextButton(onClick = { showAssistControllerPanel = false }) {
-                            Text("收起")
-                        }
-                    }
-                    Text(when (session.phase) {
-                        RemoteAssistConsent.Phase.WAITING_FOR_REPLY ->
-                            "请求已发送，请等待对方点击同意；请求有效期60秒。"
-                        RemoteAssistConsent.Phase.WAITING_FOR_PERSON -> "正在等待对方确认。"
-                        RemoteAssistConsent.Phase.AWAITING_SCREEN_PERMISSION ->
-                            "对方已同意。请让对方点击“开始共享屏幕”，通过安卓系统授权；" +
-                                "仍无画面时可在对方“设置 → 远程协助”查看画面发送状态。"
-                        RemoteAssistConsent.Phase.ACTIVE ->
-                            "屏幕已连接。点击画面可操作；对方需手动开启无障碍才可响应触摸。"
-                    }, style = MaterialTheme.typography.bodySmall)
-                    // The preview takes all remaining height. It is letterboxed with
-                    // its real aspect ratio, so tap coordinates match the remote screen.
-                    Box(Modifier.fillMaxWidth().weight(1f),
-                        contentAlignment = Alignment.Center) {
-                        if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
-                            val videoSize = assistVideoSize
-                            if (videoSize != null && manager.remoteAssistRtcFresh()) {
-                                BoxWithConstraints(Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center) {
-                                    val ratio = videoSize.first.toFloat() /
-                                        videoSize.second.coerceAtLeast(1)
-                                    val displayWidth = minOf(maxWidth, maxHeight * ratio)
-                                    val displayHeight = displayWidth / ratio
-                                    AndroidView(factory = { ctx ->
-                                        org.webrtc.SurfaceViewRenderer(ctx).also {
-                                            manager.attachRemoteRtcRenderer(it)
-                                        }
-                                    }, onRelease = { view ->
-                                        manager.detachRemoteRtcRenderer(view)
-                                    }, modifier = Modifier.width(displayWidth)
-                                        .height(displayHeight)
-                                        .pointerInput(session.sessionId) {
-                                            detectTapGestures { pos ->
-                                                runTask("远程点击") {
-                                                    manager.sendRemoteAssistTap(
-                                                        (pos.x / size.width * 10000).toInt()
-                                                            .coerceIn(0, 10000),
-                                                        (pos.y / size.height * 10000).toInt()
-                                                            .coerceIn(0, 10000))
-                                                }
-                                            }
-                                        })
-                                }
-                            } else Text("WebRTC 正在建立加密视频连接。请稍后查看诊断中的 ICE 状态。",
-                                style = MaterialTheme.typography.bodySmall)
-                        } else Text("等待家人确认并开启屏幕共享…",
-                            style = MaterialTheme.typography.bodyMedium)
-                    }
-                    if (session.phase == RemoteAssistConsent.Phase.ACTIVE) {
-                        Row(Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
-                                onClick = { runTask("远程返回") { manager.sendRemoteAssistBack() } }) {
-                                Text("返回")
-                            }
-                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
-                                onClick = { runTask("远程主页") { manager.sendRemoteAssistHome() } }) {
-                                Text("主页")
-                            }
-                        }
-                        Row(Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
-                                onClick = { runTask("远程上滑") { manager.sendRemoteAssistSwipe(
-                                    5000, 7800, 5000, 2600) } }) { Text("向上滑") }
-                            OutlinedButton(modifier = Modifier.weight(1f), enabled = !busy,
-                                onClick = { runTask("远程下滑") { manager.sendRemoteAssistSwipe(
-                                    5000, 2600, 5000, 7800) } }) { Text("向下滑") }
-                        }
-                    }
-                    val lastFeedback = listOf("远程点击", "远程返回", "远程主页", "远程上滑", "远程下滑")
-                        .mapNotNull { actionFeedback[it] }.lastOrNull()
-                    if (!lastFeedback.isNullOrBlank()) {
-                        Text(lastFeedback, style = MaterialTheme.typography.bodySmall,
-                            maxLines = 2)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showAssistControllerPanel = false }) {
-                            Text("收起窗口")
-                        }
-                        TextButton(enabled = !busy, onClick = {
-                            showAssistControllerPanel = false
-                            runTask("结束远程协助") { manager.stopRemoteAssist() }
-                        }) { Text("结束协助") }
-                    }
-                }
-            }
-        }
-    }
+    // Fullscreen rendering is owned by RemoteAssistControllerActivity.
+    // Keeping its renderer outside this frequently recomposed home/settings UI
+    // avoids the old dialog's resize and SurfaceView recreation jitter.
 
     if (showAssistDiagnostics) {
         AlertDialog(onDismissRequest = { showAssistDiagnostics = false },

@@ -40,6 +40,9 @@ class RemoteAssistStreamWireTest {
             RemoteAssistStreamWire.swipe(relation, session, 5000, 9000, 5000, 1000)))
         assertEquals(9000, swipe.y)
         assertEquals(1000, swipe.y2)
+        val recent = RemoteAssistStreamWire.decode(envelope(RemoteAssistStreamWire.RECENTS,
+            RemoteAssistStreamWire.action(relation, session, RemoteAssistStreamWire.RECENTS)))
+        assertEquals(session, recent.sessionId)
         val ack = RemoteAssistStreamWire.decode(envelope(RemoteAssistStreamWire.ACK,
             RemoteAssistStreamWire.ack(relation, session, messageId)))
         assertEquals(messageId, ack.respondsTo)

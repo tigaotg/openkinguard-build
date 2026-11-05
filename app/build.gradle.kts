@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 60
-        versionName = "0.9.25-webrtc-p2p-video"
+        versionCode = 61
+        versionName = "0.9.26-immersive-remote-controls"
     }
 
     buildTypes {

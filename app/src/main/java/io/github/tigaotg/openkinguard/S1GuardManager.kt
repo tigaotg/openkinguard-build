@@ -75,6 +75,7 @@ class S1GuardManager(context: Context) {
     private val remoteAssistConsent = RemoteAssistConsent()
     @Volatile private var remoteRtc: RemoteAssistWebRtc? = null
     @Volatile private var remoteRtcSessionId = ""
+    @Volatile private var pendingRemoteRenderer: org.webrtc.SurfaceViewRenderer? = null
     private val rtcSignalAssembler = RemoteAssistRtcSignalAssembler()
     @Volatile private var remotePeerDiagnosticSession = ""
     @Volatile private var remotePeerDiagnostics = ""
@@ -263,6 +264,7 @@ class S1GuardManager(context: Context) {
                 signal()
             })
         remoteRtc = rtc
+        pendingRemoteRenderer?.let { rtc.attachRenderer(it) }
         return rtc
     }
 
@@ -281,10 +283,12 @@ class S1GuardManager(context: Context) {
     }
 
     internal fun attachRemoteRtcRenderer(renderer: org.webrtc.SurfaceViewRenderer) {
+        pendingRemoteRenderer = renderer
         remoteRtc?.attachRenderer(renderer)
     }
 
     internal fun detachRemoteRtcRenderer(renderer: org.webrtc.SurfaceViewRenderer) {
+        if (pendingRemoteRenderer === renderer) pendingRemoteRenderer = null
         val rtc = remoteRtc
         if (rtc != null) rtc.detachRenderer(renderer) else renderer.release()
     }
@@ -299,14 +303,20 @@ class S1GuardManager(context: Context) {
     fun sendRemoteAssistTap(x: Int, y: Int): String = sendRemoteAssistGesture(
         RemoteAssistStreamWire.TAP, x, y)
 
-    fun sendRemoteAssistSwipe(x1: Int, y1: Int, x2: Int, y2: Int): String =
-        sendRemoteAssistGesture(RemoteAssistStreamWire.SWIPE, x1, y1, x2, y2)
+    fun sendRemoteAssistSwipe(x1: Int, y1: Int, x2: Int, y2: Int,
+                              durationMs: Int = 350): String =
+        sendRemoteAssistGesture(RemoteAssistStreamWire.SWIPE, x1, y1, x2, y2,
+            durationMs = durationMs)
+
+    fun sendRemoteAssistRecents(): String =
+        sendRemoteAssistGesture(RemoteAssistStreamWire.RECENTS)
 
     fun sendRemoteAssistBack(): String = sendRemoteAssistGesture(RemoteAssistStreamWire.BACK)
     fun sendRemoteAssistHome(): String = sendRemoteAssistGesture(RemoteAssistStreamWire.HOME)
 
     private fun sendRemoteAssistGesture(kind: String, x: Int = 0, y: Int = 0,
-                                        x2: Int = 0, y2: Int = 0): String {
+                                        x2: Int = 0, y2: Int = 0,
+                                        durationMs: Int = 350): String {
         val session = remoteAssistConsent.snapshot()
             ?: throw IllegalStateException("远程协助会话已结束")
         require(session.direction == RemoteAssistConsent.Direction.OUTGOING &&
@@ -321,7 +331,8 @@ class S1GuardManager(context: Context) {
             RemoteAssistStreamWire.TAP ->
                 RemoteAssistStreamWire.tap(peer.relationId, session.sessionId, x, y)
             RemoteAssistStreamWire.SWIPE ->
-                RemoteAssistStreamWire.swipe(peer.relationId, session.sessionId, x, y, x2, y2)
+                RemoteAssistStreamWire.swipe(peer.relationId, session.sessionId,
+                    x, y, x2, y2, durationMs)
             else -> RemoteAssistStreamWire.action(peer.relationId, session.sessionId, kind)
         }
         sendRemoteAssistPacket(peer, kind, session.sessionId, payload)
@@ -2420,6 +2431,8 @@ class S1GuardManager(context: Context) {
                 RemoteAssistStreamWire.BACK -> RemoteAssistGestureService.back(
                     packet.sessionId) { authorizedRemoteControl(packet.sessionId) }
                 RemoteAssistStreamWire.HOME -> RemoteAssistGestureService.home(
+                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }
+                RemoteAssistStreamWire.RECENTS -> RemoteAssistGestureService.recents(
                     packet.sessionId) { authorizedRemoteControl(packet.sessionId) }
             }
         }

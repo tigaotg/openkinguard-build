@@ -80,6 +80,9 @@ class RemoteAssistGestureService : AccessibilityService() {
         fun home(sessionId: String, approved: () -> Boolean) = global(
             sessionId, AccessibilityService.GLOBAL_ACTION_HOME, approved)
 
+        fun recents(sessionId: String, approved: () -> Boolean) = global(
+            sessionId, AccessibilityService.GLOBAL_ACTION_RECENTS, approved)
+
         private fun global(sessionId: String, action: Int, approved: () -> Boolean) {
             if (sessionId.isBlank()) return
             main.post {

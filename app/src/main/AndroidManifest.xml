@@ -56,6 +56,12 @@
                 <data android:scheme="openkinguard" android:host="invite" />
             </intent-filter>
         </activity>
+        <!-- Private, fullscreen remote controller. Requires a live approved session. -->
+        <activity
+            android:name=".RemoteAssistControllerActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:excludeFromRecents="true" />
         <activity
             android:name=".PortraitQrCaptureActivity"
             android:screenOrientation="portrait"

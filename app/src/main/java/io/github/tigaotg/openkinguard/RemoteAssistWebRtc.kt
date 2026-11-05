@@ -44,12 +44,21 @@ internal class RemoteAssistWebRtc(
     private var localTrack: VideoTrack? = null
     private var remoteTrack: VideoTrack? = null
     private var renderer: SurfaceViewRenderer? = null
+    private var desiredRenderer: SurfaceViewRenderer? = null
     private val pendingIce = ArrayList<IceCandidate>()
     private val remoteSink = VideoSink { frame ->
         if (closed.get()) return@VideoSink
-        dimensions = frame.buffer.width to frame.buffer.height
+        // A WebRTC frame can carry 90/270-degree rotation. The controller must
+        // use the displayed aspect ratio when mapping remote touches.
+        val rotated = ((frame.rotation % 360 + 360) % 360) % 180 != 0
+        val shownWidth = if (rotated) frame.buffer.height else frame.buffer.width
+        val shownHeight = if (rotated) frame.buffer.width else frame.buffer.height
+        val displaySize = shownWidth to shownHeight
+        if (dimensions != displaySize) {
+            dimensions = displaySize
+            RemoteAssistDiagnostics.size(shownWidth, shownHeight)
+        }
         lastFrameAt = SystemClock.elapsedRealtime()
-        RemoteAssistDiagnostics.size(frame.buffer.width, frame.buffer.height)
         RemoteAssistDiagnostics.mode("WebRTC 视频 / 本机解码")
         RemoteAssistDiagnostics.onReceived(0) // Byte count is not exposed by this sink.
         RemoteAssistDiagnostics.onDecoded()
@@ -73,6 +82,13 @@ internal class RemoteAssistWebRtc(
         initializeOnce(app)
         val context = EglBase.create()
         egl = context
+        // The fullscreen Activity can exist before the first SDP arrives.
+        // Attach its one persistent renderer once EGL is actually ready.
+        // SurfaceViewRenderer.init() may request a layout; always run it on UI.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val view = synchronized(renderLock) { desiredRenderer }
+            if (view != null) attachRenderer(view)
+        }
         factory = PeerConnectionFactory.builder()
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(context.eglBaseContext, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(context.eglBaseContext))
@@ -136,7 +152,9 @@ internal class RemoteAssistWebRtc(
 
     fun attachRenderer(view: SurfaceViewRenderer) {
         synchronized(renderLock) {
-            if (closed.get() || renderer === view) return
+            if (closed.get()) return
+            desiredRenderer = view
+            if (renderer === view) return
             val ctx = egl?.eglBaseContext ?: return
             renderer?.let { old ->
                 remoteTrack?.removeSink(old)
@@ -144,7 +162,9 @@ internal class RemoteAssistWebRtc(
             }
             view.init(ctx, null)
             view.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-            view.setEnableHardwareScaler(true)
+            // Keep the Surface at the fullscreen view's size across frame sizes.
+            // Hardware-scaler surface resizes were contributing to visible jitter.
+            view.setEnableHardwareScaler(false)
             renderer = view
             remoteTrack?.addSink(view)
         }
@@ -152,6 +172,7 @@ internal class RemoteAssistWebRtc(
 
     fun detachRenderer(view: SurfaceViewRenderer) {
         synchronized(renderLock) {
+            if (desiredRenderer === view) desiredRenderer = null
             if (renderer === view) {
                 remoteTrack?.removeSink(view)
                 renderer = null
@@ -288,6 +309,7 @@ internal class RemoteAssistWebRtc(
                 renderer?.let { remoteTrack?.removeSink(it) }
                 remoteTrack = null
                 renderer = null
+                desiredRenderer = null
             }
             runCatching { capturer?.stopCapture() }
             runCatching { capturer?.dispose() }
