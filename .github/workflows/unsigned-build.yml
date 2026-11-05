@@ -31,7 +31,7 @@ jobs:
           sed -i 's/compose-bom:2026.09.00/compose-bom:2025.10.00/' app/build.gradle.kts
           sed -i 's/signingConfig = signingConfigs.getByName("isolatedPilotV4")/signingConfig = null/' app/build.gradle.kts
           chmod +x gradlew
-          ./gradlew --no-daemon :security:protocol:test :app:testDebugUnitTest :app:assemblePilotV4 --stacktrace
+          ./gradlew --no-daemon :security:protocol:test :app:testDebugUnitTest :app:assemblePilotV4 --stacktrace || { for f in app/build/test-results/testDebugUnitTest/TEST-*.xml; do if [ -f "$f" ]; then grep -A 35 '<failure' "$f" || true; fi; done; exit 1; }
       - name: Package APK and signing tool
         run: |
           mkdir -p build-out
