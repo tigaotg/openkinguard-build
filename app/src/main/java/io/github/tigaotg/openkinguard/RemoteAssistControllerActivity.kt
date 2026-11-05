@@ -262,8 +262,14 @@ private fun ControllerScreen(sessionId: String, onCollapse: () -> Unit) {
             text = { Text("将停止屏幕共享并撤销本次控制授权。") },
             confirmButton = { TextButton(onClick = {
                 confirmEnd = false
-                command("结束协助") { manager.stopRemoteAssist() }
-                onCollapse()
+                // Local grant must be revoked before Activity disposal cancels its
+                // rememberCoroutineScope; never leave capture alive after "结束".
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        runCatching { manager.stopRemoteAssist() }
+                    }
+                    onCollapse()
+                }
             }) { Text("确定结束") } },
             dismissButton = { TextButton(onClick = { confirmEnd = false }) {
                 Text("继续协助")
