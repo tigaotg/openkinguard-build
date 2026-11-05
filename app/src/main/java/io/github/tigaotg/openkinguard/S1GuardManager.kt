@@ -76,9 +76,6 @@ class S1GuardManager(context: Context) {
     private val remoteAssistFrames = RemoteAssistFrames()
     private val remoteVideoFrames = RemoteAssistVideoFrames()
     private val remoteVideoDecoder = RemoteAssistVideoDecoder()
-    @Volatile private var remotePeerDiagnosticSession = ""
-    @Volatile private var remotePeerDiagnostics = ""
-    @Volatile private var remotePeerDiagnosticAt = 0L
     @Volatile private var remoteVideoSender: Socket? = null
     private val remoteVideoSequence = AtomicLong(0)
     private val remoteStreamSequence = AtomicLong(0)
@@ -191,44 +188,6 @@ class S1GuardManager(context: Context) {
 
     internal fun remoteAssistVideoSize(): Pair<Int, Int>? = remoteVideoFrames.size()
     internal fun remoteAssistVideoFresh(): Boolean = remoteVideoFrames.fresh()
-    internal fun remoteAssistDiagnosticReport(): String {
-        val session = remoteAssistConsent.snapshot()
-        val peer = if (session?.sessionId == remotePeerDiagnosticSession)
-            remotePeerDiagnostics else ""
-        val age = if (remotePeerDiagnosticAt == 0L) "尚未收到" else
-            "${(System.currentTimeMillis() - remotePeerDiagnosticAt) / 1000}秒前"
-        val phase = session?.phase?.name ?: "无会话"
-        val lanVerified = session?.relationId?.let { verified.containsKey(it) } ?: false
-        return "OpenKinGuard 远程协助诊断 0.9.22\n" +
-            "采集时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
-                java.util.Locale.CHINA).format(java.util.Date())}\n" +
-            "本机: ${Build.MANUFACTURER} ${Build.MODEL}; " +
-            "Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT}\n" +
-            "会话阶段: $phase; LAN设备已验证: $lanVerified\n" +
-            "当前画面路径: ${when {
-                remoteVideoFrames.fresh() -> "H264局域网实时视频"
-                remoteAssistFrames.latest() != null -> "JPEG兼容图片流"
-                else -> "无可见画面"
-            }}\n" +
-            "---------------------\n${remoteVideoFrames.diagnostics()}\n" +
-            "${remoteVideoDecoder.diagnostics()}\n" +
-            "${remoteAssistFrames.diagnostics()}\n" +
-            "---------------------\n被协助端报告(${if (peer.isBlank()) "未收到" else age}):\n" +
-            (peer.ifBlank { "未收到对方发送端的诊断；请保持双方屏幕共享10秒后刷新" }) +
-            "\n说明: fps是最近5秒实测值；仅上报性能计数，不包含画面、IP、密钥。"
-    }
-
-    /** Called only after the subject has approved Android's per-session screen prompt. */
-    internal fun sendRemoteAssistDiagnostic(sessionId: String, text: String) {
-        require(authorizedRemoteControl(sessionId)) { "本次共享已结束" }
-        val session = requireNotNull(remoteAssistConsent.snapshot())
-        val peer = relations().singleOrNull { it.active &&
-            it.relationId == session.relationId &&
-            it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
-            ?: throw IllegalStateException("被授权的家人关系已失效")
-        sendRemoteAssistPacket(peer, RemoteAssistStreamWire.DIAGNOSTIC, sessionId,
-            RemoteAssistStreamWire.diagnostic(peer.relationId, sessionId, text))
-    }
     internal fun attachRemoteVideoSurface(surface: android.view.Surface?) {
         if (surface == null) remoteVideoDecoder.detach()
         else remoteVideoDecoder.attach(surface, remoteVideoFrames.config())
@@ -251,6 +210,7 @@ class S1GuardManager(context: Context) {
             it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
             ?: return false
         val node = verified[peer.relationId]?.let { nodes[it] } ?: return false
+        RemoteAssistDiagnostics.connection("局域网 TCP / 端口 " + node.port)
         closeRemoteAssistVideo()
         val socket = Socket()
         try {
@@ -268,8 +228,10 @@ class S1GuardManager(context: Context) {
                 admitRemoteStream(reply, peer, sessionId)) { "远程视频签名握手失败" }
             socket.soTimeout = 0
             remoteVideoSender = socket
+            RemoteAssistDiagnostics.state("H.264 直连认证成功")
             return true
         } catch (failure: Exception) {
+            RemoteAssistDiagnostics.error("视频连接-" + failure.javaClass.simpleName)
             runCatching { socket.close() }
             throw failure
         }
@@ -286,6 +248,7 @@ class S1GuardManager(context: Context) {
             ?: throw IllegalStateException("帮助关系已撤销")
         val socket = remoteVideoSender ?: throw java.io.IOException("视频直连已断开")
         val id = remoteVideoSequence.incrementAndGet()
+        val startNs = System.nanoTime()
         try {
             val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -299,7 +262,12 @@ class S1GuardManager(context: Context) {
                 write(bytes)
                 flush()
             }
+            if (flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                RemoteAssistDiagnostics.onSent(bytes.size,
+                    (System.nanoTime() - startNs) / 1_000_000)
+            }
         } catch (failure: Exception) {
+            RemoteAssistDiagnostics.error("视频发送-" + failure.javaClass.simpleName)
             closeRemoteAssistVideo()
             throw failure
         }
@@ -324,6 +292,10 @@ class S1GuardManager(context: Context) {
             it.peerFingerprint == session.peerFingerprint && it.role == PairingRole.SUBJECT }
             ?: throw IllegalStateException("原有帮助关系已撤销")
         val frameId = UUID.randomUUID().toString()
+        RemoteAssistDiagnostics.mode("兼容 JPEG，约 1 FPS")
+        RemoteAssistDiagnostics.connection("旧版逐帧签名 / 局域网或P2P")
+        RemoteAssistDiagnostics.size(width, height)
+        val startNs = System.nanoTime()
         val parts = jpeg.asList().chunked(2000)
         require(parts.size in 1..40)
         for ((index, data) in parts.withIndex()) {
@@ -332,6 +304,9 @@ class S1GuardManager(context: Context) {
                 RemoteAssistStreamWire.frame(peer.relationId, sessionId, frameId,
                     index, parts.size, width, height, data.toByteArray()))
         }
+        RemoteAssistDiagnostics.onEncoded()
+        RemoteAssistDiagnostics.onSent(jpeg.size,
+            (System.nanoTime() - startNs) / 1_000_000)
     }
 
     fun sendRemoteAssistTap(x: Int, y: Int): String = sendRemoteAssistGesture(
@@ -431,9 +406,7 @@ class S1GuardManager(context: Context) {
             it.relationId == relationId && it.role == PairingRole.HELPER
         } ?: throw IllegalArgumentException("只能向已绑定的被帮助者申请远程协助")
         val session = remoteAssistConsent.request(relationId, peer.peerFingerprint)
-        remotePeerDiagnosticSession = session.sessionId
-        remotePeerDiagnostics = ""
-        remotePeerDiagnosticAt = 0L
+        RemoteAssistDiagnostics.begin("控制端")
         return try {
             sendRemoteAssistControl(peer, RemoteAssistWire.REQUEST, session.sessionId)
             signal()
@@ -458,6 +431,7 @@ class S1GuardManager(context: Context) {
             it.role == PairingRole.SUBJECT }
             ?: throw IllegalArgumentException("家人关系已经撤销")
         remoteAssistConsent.localDecision(session.sessionId, approve)
+        if (approve) RemoteAssistDiagnostics.begin("被控制端")
         return try {
             sendRemoteAssistControl(peer, if (approve) RemoteAssistWire.ACCEPT
                 else RemoteAssistWire.DECLINE, session.sessionId)
@@ -474,8 +448,7 @@ class S1GuardManager(context: Context) {
     fun stopRemoteAssist(): String {
         val session = remoteAssistConsent.snapshot() ?: return "当前没有远程协助会话"
         remoteAssistConsent.clear() // Local revoke must not depend on network availability.
-        remotePeerDiagnostics = ""
-        remotePeerDiagnosticSession = ""
+        RemoteAssistDiagnostics.finish()
         remoteAssistFrames.clear()
         remoteVideoFrames.clear()
         remoteVideoDecoder.detach()
@@ -2426,8 +2399,7 @@ class S1GuardManager(context: Context) {
                                          peer: SavedPeer, own: String) {
         val msg = signed.message
         val packet = RemoteAssistStreamWire.decode(msg)
-        val incomingFrame = msg.payloadKind in setOf(RemoteAssistStreamWire.FRAME,
-            RemoteAssistStreamWire.DIAGNOSTIC)
+        val incomingFrame = msg.payloadKind == RemoteAssistStreamWire.FRAME
         require(peer.role == (if (incomingFrame) PairingRole.HELPER else PairingRole.SUBJECT)) {
             "远程协助发送者的家人角色错误"
         }
@@ -2450,12 +2422,6 @@ class S1GuardManager(context: Context) {
                         remoteAssistConsent.remotePreviewStarted(packet.sessionId)
                         signal()
                     }
-                }
-                RemoteAssistStreamWire.DIAGNOSTIC -> {
-                    remotePeerDiagnosticSession = packet.sessionId
-                    remotePeerDiagnostics = packet.diagnosticText.take(1100)
-                    remotePeerDiagnosticAt = System.currentTimeMillis()
-                    signal()
                 }
                 RemoteAssistStreamWire.TAP -> RemoteAssistGestureService.tap(
                     packet.sessionId, packet.x, packet.y) {
@@ -2494,6 +2460,8 @@ class S1GuardManager(context: Context) {
             RemoteAssistVideoWire.ack(open.relationId, open.sessionId,
                 opening.message.messageId.value))
         writePacket(socket, LanTestWire.encode(ack))
+        RemoteAssistDiagnostics.connection("局域网 TCP / 端口 " + socket.localPort)
+        RemoteAssistDiagnostics.state("控制端已经接收视频流")
         socket.soTimeout = 10_000
         var lastSignaledAt = 0L
         while (currentSession()) {
@@ -2512,6 +2480,8 @@ class S1GuardManager(context: Context) {
             val bytes = ByteArray(length).also(input::readFully)
             val unit = remoteVideoFrames.accept(data, bytes)
                 ?: throw IllegalArgumentException("视频流 SHA-256 验证失败")
+            if (unit.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0)
+                RemoteAssistDiagnostics.onReceived(bytes.size)
             if (unit.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
                 remoteAssistConsent.remotePreviewStarted(open.sessionId)
             }

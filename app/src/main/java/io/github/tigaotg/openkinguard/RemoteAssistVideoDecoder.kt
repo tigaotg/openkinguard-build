@@ -15,18 +15,6 @@ internal class RemoteAssistVideoDecoder {
     @Volatile private var thread: Thread? = null
     @Volatile private var dimensions: Pair<Int, Int>? = null
     @Volatile private var awaitKeyframe = true
-    private val offered = RemoteAssistTrafficMeter()
-    private val rendered = RemoteAssistTrafficMeter()
-    private val discarded = java.util.concurrent.atomic.AtomicLong(0)
-    @Volatile private var lastError = "无"
-    @Volatile private var lastQueueWaitMs = -1L
-
-    fun diagnostics(): String = "H264解码器: ${if (running.get()) "运行中" else "未运行"}; " +
-        "尺寸: ${dimensions?.let { "${it.first}x${it.second}" } ?: "未知"}\n" +
-        "已入队: ${offered.summary()}\n已显示: ${rendered.summary()}\n" +
-        "丢弃/等待关键帧: ${discarded.get()}单元; 队列积压: ${queue.size}单元; " +
-        "最近排队耗时: ${if (lastQueueWaitMs < 0) "暂无" else "${lastQueueWaitMs}ms"}\n" +
-        "最近异常: $lastError"
 
     @Synchronized fun attach(surface: Surface, initialConfig: RemoteAssistVideoFrames.Unit?) {
         detach()
@@ -46,17 +34,17 @@ internal class RemoteAssistVideoDecoder {
         val isConfig = unit.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
         val isKey = unit.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
         if (awaitKeyframe && !isKey && !isConfig) {
-            discarded.incrementAndGet()
+            RemoteAssistDiagnostics.onDropped()
             return
         }
         if (!queue.offer(unit)) {
-            discarded.addAndGet(queue.size.toLong() + 1)
+            RemoteAssistDiagnostics.onDropped()
             queue.clear()
             awaitKeyframe = true
             if (isKey || isConfig) queue.offer(unit)
         }
-        offered.record(unit.bytes.size)
         if (isKey) awaitKeyframe = false
+        RemoteAssistDiagnostics.onQueue(queue.size)
     }
 
     @Synchronized fun detach() {
@@ -66,6 +54,7 @@ internal class RemoteAssistVideoDecoder {
         thread = null
         queue.clear()
         dimensions = null
+        RemoteAssistDiagnostics.onQueue(0)
     }
 
     private fun decode(surface: Surface, epoch: Long) {
@@ -78,8 +67,6 @@ internal class RemoteAssistVideoDecoder {
                 val unit = try { queue.poll(60, java.util.concurrent.TimeUnit.MILLISECONDS) }
                     catch (_: InterruptedException) { break }
                 if (unit != null) {
-                    lastQueueWaitMs = (System.currentTimeMillis() - unit.receivedAt)
-                        .coerceAtLeast(0)
                     val size = unit.width to unit.height
                     if (codec == null || lastSize != size) {
                         runCatching { codec?.stop() }
@@ -90,6 +77,8 @@ internal class RemoteAssistVideoDecoder {
                         fmt.setInteger("low-latency", 1) // optional, ignored on older decoders
                         codec.configure(fmt, surface, null, 0)
                         codec.start()
+                        RemoteAssistDiagnostics.mode("H.264 解码 / " + codec.name)
+                        RemoteAssistDiagnostics.size(unit.width, unit.height)
                         lastSize = size
                         dimensions = size
                     }
@@ -103,19 +92,25 @@ internal class RemoteAssistVideoDecoder {
                             active.queueInputBuffer(inputIndex, 0, unit.bytes.size,
                                 unit.presentationUs, unit.flags and
                                     MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
-                        } else active.queueInputBuffer(inputIndex, 0, 0, 0, 0)
+                        } else {
+                            RemoteAssistDiagnostics.onDropped()
+                            active.queueInputBuffer(inputIndex, 0, 0, 0, 0)
+                        }
+                    } else if (unit.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                        RemoteAssistDiagnostics.onDropped()
                     }
+                    RemoteAssistDiagnostics.onQueue(queue.size)
                 }
                 val active = codec ?: continue
                 var outputIndex = active.dequeueOutputBuffer(info, 0)
                 while (outputIndex >= 0) {
                     active.releaseOutputBuffer(outputIndex, true)
-                    rendered.record()
+                    RemoteAssistDiagnostics.onDecoded()
                     outputIndex = active.dequeueOutputBuffer(info, 0)
                 }
             }
         } catch (failure: Exception) {
-            lastError = "${failure.javaClass.simpleName}: ${failure.message?.take(80)}"
+            RemoteAssistDiagnostics.error("解码器-" + failure.javaClass.simpleName)
             // The next explicit Surface attachment is a clean decoder retry.
         } finally {
             runCatching { codec?.stop() }

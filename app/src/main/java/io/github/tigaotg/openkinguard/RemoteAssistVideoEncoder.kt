@@ -17,15 +17,6 @@ internal class RemoteAssistVideoEncoder(
     private var codec: MediaCodec? = null
     private var input: Surface? = null
     private var worker: Thread? = null
-    private val encoded = RemoteAssistTrafficMeter()
-    private val transmitted = RemoteAssistTrafficMeter()
-    @Volatile private var errorState = "无"
-    @Volatile private var lastWriteMs = -1L
-
-    fun diagnostics(): String = "H264编码器: ${width}x$height, 目标30fps\n" +
-        "编码输出: ${encoded.summary()}\n已发送: ${transmitted.summary()}\n" +
-        "最近单帧发送耗时: ${if (lastWriteMs < 0) "暂无" else "${lastWriteMs}ms"}\n" +
-        "编码状态: ${if (running.get()) "运行中" else "已停止"}; 最近异常: $errorState"
 
     fun start(): Surface {
         require(!running.get())
@@ -43,6 +34,8 @@ internal class RemoteAssistVideoEncoder(
             encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val surface = encoder.createInputSurface()
             encoder.start()
+            RemoteAssistDiagnostics.mode("H.264 编码 / " + encoder.name)
+            RemoteAssistDiagnostics.size(width, height)
             codec = encoder
             input = surface
             running.set(true)
@@ -77,10 +70,8 @@ internal class RemoteAssistVideoEncoder(
                     }
                     if (csd.size() > 0) {
                         configBytes = csd.toByteArray()
-                        val sentAt = android.os.SystemClock.elapsedRealtime()
                         send(configPresentation, MediaCodec.BUFFER_FLAG_CODEC_CONFIG,
                             requireNotNull(configBytes))
-                        lastWriteMs = android.os.SystemClock.elapsedRealtime() - sentAt
                     }
                     continue
                 }
@@ -104,21 +95,18 @@ internal class RemoteAssistVideoEncoder(
                             MediaCodec.BUFFER_FLAG_CODEC_CONFIG, it) }
                     }
                     if (data.size <= 288_000) {
-                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) encoded.record(data.size)
-                        val sentAt = android.os.SystemClock.elapsedRealtime()
+                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) RemoteAssistDiagnostics.onEncoded()
                         send(info.presentationTimeUs, flags and 31, data)
-                        lastWriteMs = android.os.SystemClock.elapsedRealtime() - sentAt
-                        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0)
-                            transmitted.record(data.size)
                         report("720p硬件视频流已通过局域网发送")
                     } else {
-                        errorState = "编码帧大于288KB"
+                        RemoteAssistDiagnostics.onDropped()
+                        RemoteAssistDiagnostics.error("编码帧超过288KB")
                         report("关键帧超过视频限额，等待下一帧")
                     }
                 } finally { encoder.releaseOutputBuffer(index, false) }
             }
         } catch (failure: Exception) {
-            errorState = "${failure.javaClass.simpleName}: ${failure.message?.take(80)}"
+            if (running.get()) RemoteAssistDiagnostics.error("硬件编码中断-" + failure.javaClass.simpleName)
             if (running.get()) report("硬件视频流中断：${failure.message?.take(70)
                 ?: failure.javaClass.simpleName}")
         } finally {
