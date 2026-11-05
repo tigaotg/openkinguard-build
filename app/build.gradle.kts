@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 57
-        versionName = "0.9.22-remote-assist-diagnostics"
+        versionCode = 58
+        versionName = "0.9.23-background-listener-controls"
     }
 
     buildTypes {

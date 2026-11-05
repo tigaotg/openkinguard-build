@@ -630,6 +630,36 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             delay(if (requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
         }
     }
+    // Android starts/stops foreground services asynchronously. Show the actual runtime
+    // state rather than claiming success immediately after startForegroundService().
+    LaunchedEffect(backgroundFeedback) {
+        if (backgroundFeedback.startsWith("正在开启持续监听")) {
+            repeat(16) {
+                delay(300)
+                backgroundListening = S1Runtime.isBackgroundListening()
+                if (backgroundListening) {
+                    backgroundFeedback = "持续监听已开启；可在通知栏停止"
+                    return@LaunchedEffect
+                }
+                val error = S1LanService.lastStartupFailure()
+                if (!error.isNullOrBlank()) {
+                    backgroundFeedback = error
+                    return@LaunchedEffect
+                }
+            }
+            backgroundFeedback = "尚未确认启动成功；请检查通知栏和系统后台限制"
+        } else if (backgroundFeedback.startsWith("正在停止持续监听")) {
+            repeat(16) {
+                delay(300)
+                backgroundListening = S1Runtime.isBackgroundListening()
+                if (!backgroundListening) {
+                    backgroundFeedback = "持续监听已停止；打开应用时仍可通信"
+                    return@LaunchedEffect
+                }
+            }
+            backgroundFeedback = "系统尚未确认停止；请检查通知栏"
+        }
+    }
     val medicalTree = snapshot.history.medicalFolderTreeUri
     LaunchedEffect(medicalFolderOpen, medicalTree, medicalPath.lastOrNull()?.first, medicalReload) {
         if (medicalFolderOpen && medicalTree.isNotBlank()) {
@@ -2432,12 +2462,23 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     Text("网络：用于局域网发现、公共节点交换连接信息和已绑定手机通信。" +
                         "联网权限在安装时授予，没有单独的系统弹窗。",
                         style = MaterialTheme.typography.bodySmall)
-                    Text("后台连接：仅在你主动开启时尝试保持监听，省电模式仍可能使其断开。" +
-                        "本版未申请后台定位或自动短信权限。",
+                    Text("后台连接：" + if (backgroundListening)
+                        "持续监听已开启；通知栏应有常驻提示。" else
+                        "持续监听未开启；离开应用后可能无法收到家人消息。",
                         style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(onClick = {
-                        settingsSectionName = SettingsDestination.BACKGROUND.name
-                    }) { Text("查看后台连接设置") }
+                    Text("只在本人点击后启动。断网、系统省电或强制停止仍可能使它中断；" +
+                        "本版不申请后台定位权限。",
+                        style = MaterialTheme.typography.bodySmall)
+                    if (backgroundListening) {
+                        OutlinedButton(onClick = {
+                            backgroundFeedback = S1LanService.requestStop(context)
+                        }) { Text("停止持续监听") }
+                    } else {
+                        Button(onClick = {
+                            backgroundFeedback = S1LanService.requestStart(context)
+                        }) { Text("开启持续监听") }
+                    }
+                    InlineActionFeedback(backgroundFeedback)
                     OutlinedButton(onClick = {
                         context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                             Uri.parse("package:${context.packageName}")))
@@ -2871,21 +2912,12 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     "此功能不是实时定位或救援保障；系统省电限制、断网或强制停止仍可能中断服务。")
                 if (backgroundListening) {
                     OutlinedButton(onClick = {
-                        context.startService(Intent(context, S1LanService::class.java)
-                            .setAction(S1LanService.ACTION_STOP))
-                        backgroundListening = false
-                        backgroundFeedback = "已请求停止持续监听；应用仍在前台时可继续通信"
+                        backgroundFeedback = S1LanService.requestStop(context)
                     }) { Text("停止持续监听") }
                 } else {
                     Button(onClick = {
-                        backgroundFeedback = runCatching {
-                            val intent = Intent(context, S1LanService::class.java)
-                                .setAction(S1LanService.ACTION_START)
-                            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
-                            else context.startService(intent)
-                            "已请求开启；请检查通知栏的常驻提示"
-                        }.getOrElse { "启动失败：${it.message ?: it.javaClass.simpleName}" }
-                    }) { Text("开启持续通信监听") }
+                        backgroundFeedback = S1LanService.requestStart(context)
+                    }) { Text("开启持续监听") }
                 }
                 InlineActionFeedback(backgroundFeedback)
                 }

@@ -5,7 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import java.util.concurrent.Executors
@@ -19,6 +21,31 @@ class S1LanService : Service() {
         const val ACTION_STOP = "io.github.tigaotg.openkinguard.STOP_LAN_TEST"
         private const val CHANNEL_ID = "okg_s2_connected_device_v1"
         private const val NOTIFICATION_ID = 205
+        @Volatile private var startupFailure: String? = null
+
+        /** A click is a request, not proof that Android started the service. */
+        fun requestStart(context: Context): String {
+            startupFailure = null
+            return runCatching {
+                val intent = Intent(context, S1LanService::class.java).setAction(ACTION_START)
+                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+                else context.startService(intent)
+                "正在开启持续监听，等待系统确认"
+            }.getOrElse { failure ->
+                startupFailure = "系统拒绝启动：${failure.javaClass.simpleName}"
+                requireNotNull(startupFailure)
+            }
+        }
+
+        fun requestStop(context: Context): String = runCatching {
+            context.startService(Intent(context, S1LanService::class.java)
+                .setAction(ACTION_STOP))
+            "正在停止持续监听，等待系统确认"
+        }.getOrElse { failure ->
+            "停止失败：${failure.javaClass.simpleName}"
+        }
+
+        fun lastStartupFailure(): String? = startupFailure
     }
 
     private var scheduler: ScheduledExecutorService? = null
@@ -31,10 +58,11 @@ class S1LanService : Service() {
             return START_NOT_STICKY
         }
         // Android requires an ongoing visible notification before opening the LAN sockets.
+        startupFailure = null
         val notifications = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         notifications.createNotificationChannel(NotificationChannel(CHANNEL_ID,
-            "持续局域网监听（演练）", NotificationManager.IMPORTANCE_LOW).apply {
-            description = "经用户开启的局域网后台互助演练；不保证真实紧急救援"
+            "持续通信监听", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "由用户主动开启的已绑定设备通信；不保证系统始终在线"
         })
         val activityIntent = PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java),
@@ -45,14 +73,21 @@ class S1LanService : Service() {
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("OpenKinGuard · 持续监听中")
-            .setContentText("正在监听已绑定局域网设备（演练，非真实救援）")
+            .setContentText("已开启设备通信监听；系统省电仍可能中断")
             .setContentIntent(activityIntent)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setPriority(Notification.PRIORITY_LOW)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, "停止监听", stopIntent).build())
             .build()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (error: Exception) {
+            startupFailure = "前台通知或服务启动失败：${error.javaClass.simpleName}"
+            Log.w("OpenKinGuard", "Cannot start persistent notification", error)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         if (scheduler == null) {
             try {
@@ -77,6 +112,7 @@ class S1LanService : Service() {
                     }
                 }, 0L, 60L, TimeUnit.SECONDS)
             } catch (error: Exception) {
+                startupFailure = "持续监听初始化失败：${error.javaClass.simpleName}"
                 Log.w("OpenKinGuard", "Cannot start optional LAN listener", error)
                 stopSelf()
                 return START_NOT_STICKY
