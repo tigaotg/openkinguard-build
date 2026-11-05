@@ -22,6 +22,14 @@ class LanTestWireTest {
         return SignedEnvelope(msg, SignedProtocol.sign(msg, keyPair.private))
     }
 
+    private fun signedAssist(sessionId: String, kind: String, payload: ByteArray): SignedEnvelope {
+        val msg = MessageEnvelope(1, MessageId(UUID.randomUUID().toString()),
+            EventId(sessionId), DeviceId("okg-sender"), UserId("okg-subject"),
+            DeviceId("okg-recipient"), 1793350000000, 1793350300000,
+            1, kind, payload)
+        return SignedEnvelope(msg, SignedProtocol.sign(msg, keyPair.private))
+    }
+
     private fun reject(action: () -> Unit) {
         try { action(); fail("Expected malformed packet rejection") }
         catch (_: IllegalArgumentException) { /* expected */ }
@@ -32,6 +40,28 @@ class LanTestWireTest {
         val decoded = LanTestWire.decode(LanTestWire.encode(signed()))
         assertTrue(SignedProtocol.verify(decoded.message, decoded.signature, keyPair.public))
         assertEquals(relation, LanTestWire.body(decoded.message).relationId)
+    }
+
+    @Test fun remoteAssistJpegFragmentIsNotMisparsedAsSosExercise() {
+        val session = UUID.randomUUID().toString()
+        val fragment = ByteArray(2000) { (it % 251).toByte() }
+        val payload = RemoteAssistStreamWire.frame(relation, session,
+            UUID.randomUUID().toString(), 0, 1, 420, 740, fragment)
+        assertTrue(payload.size > 512)
+        val decoded = LanTestWire.decode(LanTestWire.encode(
+            signedAssist(session, RemoteAssistStreamWire.FRAME, payload)))
+        assertTrue(SignedProtocol.verify(decoded.message, decoded.signature, keyPair.public))
+        assertEquals(relation, LanTestWire.body(decoded.message).relationId)
+        assertArrayEquals(fragment, RemoteAssistStreamWire.decode(decoded.message).jpegPart)
+    }
+
+    @Test fun remoteAssistAckUsesTheSameAuthenticatedCarrier() {
+        val session = UUID.randomUUID().toString()
+        val payload = RemoteAssistStreamWire.ack(relation, session, requestId)
+        val decoded = LanTestWire.decode(LanTestWire.encode(
+            signedAssist(session, RemoteAssistStreamWire.ACK, payload)))
+        assertEquals(requestId, LanTestWire.body(decoded.message).acknowledgedMessageId)
+        assertTrue(SignedProtocol.verify(decoded.message, decoded.signature, keyPair.public))
     }
 
     @Test fun ackIsBoundToOriginalMessageIdAndRelation() {

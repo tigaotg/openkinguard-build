@@ -44,6 +44,12 @@ object LanTestWire {
                 val assist = RemoteAssistWire.body(message)
                 Body(assist.relationId, assist.respondingTo)
             }
+            in RemoteAssistStreamWire.kinds -> {
+                // The existing authenticated LAN frame carrier also handles
+                // voluntary screen fragments and their signed acknowledgements.
+                val assist = RemoteAssistStreamWire.decode(message)
+                Body(assist.relationId, assist.respondsTo)
+            }
             else -> {
                 // The same bounded, signed frame carrier also transports S1 exercise cases.
                 val exercise = S1CaseWire.body(message)
@@ -93,7 +99,12 @@ object LanTestWire {
             val sequence = input.readLong()
             val kind = input.readUTF()
             val length = input.readInt()
-            require(length in 1..512 && length <= input.available() - 4) { "Invalid payload length" }
+            // Keep the original 512-byte bound for SOS/location/control.
+            // A screen frame may contain a separately validated JPEG fragment.
+            val maxLength = if (kind in RemoteAssistStreamWire.kinds) 4300 else 512
+            require(length in 1..maxLength && length <= input.available() - 4) {
+                "Invalid payload length"
+            }
             val payload = ByteArray(length).also(input::readFully)
             val sigLength = input.readInt()
             require(sigLength in 64..80 && sigLength == input.available()) { "Invalid signature length" }

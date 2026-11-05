@@ -17,6 +17,7 @@ object RemoteAssistStreamWire {
     const val HOME = "OKG_REMOTE_HOME_V1"
     const val ACK = "OKG_REMOTE_STREAM_ACK_V1"
     val requestKinds = setOf(FRAME, TAP, SWIPE, BACK, HOME)
+    val kinds = requestKinds + ACK
 
     data class Packet(
         val relationId: String,
@@ -70,7 +71,7 @@ object RemoteAssistStreamWire {
             .toByteArray(Charsets.US_ASCII)
 
     fun decode(message: MessageEnvelope): Packet {
-        require(message.payloadKind in requestKinds + ACK) { "Unknown assistance packet" }
+        require(message.payloadKind in kinds) { "Unknown assistance packet" }
         require(message.payload.size in 75..4300 &&
             message.payload.all { it.toInt() in 32..126 }) { "Invalid assistance packet" }
         val parts = message.payload.toString(Charsets.US_ASCII).split('|')
