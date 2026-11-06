@@ -71,6 +71,7 @@ class Pending:
     recipient: str
     created: float
     queued: bool = False
+    kind: str = "req"
 
 
 @dataclass
@@ -207,7 +208,8 @@ class Relay:
         if len(self.clients) >= self.max_clients:
             raise ValueError("family connection limit reached")
         self.clients[fingerprint] = socket
-        await socket.send(json.dumps({"t": "ready", "fp": fingerprint}))
+        await socket.send(json.dumps({"t": "ready", "fp": fingerprint,
+                                      "caps": ["family-peers-v1", "family-pair-v1"]}))
         LOG.info("Connected identity %s", fingerprint[:12])
         return fingerprint
 
@@ -218,7 +220,8 @@ class Relay:
             if pending.queued:
                 self.mark_queued_idle(request_id)
             else:
-                await self.send(sender, {"t": "error", "id": request_id, "code": "timeout"})
+                await self.send(sender, {"t": "pair_error" if pending.kind == "pair" else "error",
+                                         "id": request_id, "code": "timeout"})
 
     async def receive(self, identity: str, payload: dict) -> None:
         self.check_rate(identity)
@@ -226,7 +229,22 @@ class Relay:
         request_id = payload.get("id")
         if not isinstance(request_id, str) or not (1 <= len(request_id) <= 70):
             raise ValueError("invalid request ID")
-        if kind == "req":
+        if kind == "peers":
+            # Only authenticated, owner-approved participants can query ONLINE
+            # peers. No medical data, nickname, offline list or relation is exposed.
+            await self.send(identity, {"t": "peer_list", "id": request_id,
+                                       "peers": sorted(fp for fp in self.clients if fp != identity)})
+        elif kind == "pair_cancel":
+            recipient = payload.get("to")
+            session_id = payload.get("session")
+            if (not isinstance(recipient, str) or not FINGERPRINT.fullmatch(recipient) or
+                    not isinstance(session_id, str) or not re.fullmatch(
+                        r"[0-9a-f-]{36}", session_id)):
+                raise ValueError("invalid pairing cancellation")
+            if recipient != identity:
+                await self.send(recipient, {"t": "pair_cancelled", "from": identity,
+                                            "session": session_id})
+        elif kind in ("req", "pair"):
             recipient = payload.get("to")
             if not isinstance(recipient, str) or len(recipient) != 64 or any(
                 c not in "0123456789abcdef" for c in recipient
@@ -237,9 +255,16 @@ class Relay:
             ):
                 await self.send(identity, {"t": "error", "id": request_id, "code": "denied"})
                 return
-            frame = dec(payload.get("data"), MAX_FRAME_BYTES)
-            if len(frame) < 100:
-                raise ValueError("invalid signed application frame")
+            if kind == "req":
+                frame = dec(payload.get("data"), MAX_FRAME_BYTES)
+                if len(frame) < 100:
+                    raise ValueError("invalid signed application frame")
+            else:
+                # The phones validate the *signed* four-step pairing protocol;
+                # the family relay only routes bounded, never-offline invitations.
+                frame = payload.get("frame")
+                if not isinstance(frame, str) or not 100 <= len(frame) <= 4000 or not frame.isascii():
+                    raise ValueError("invalid pairing frame")
             if sum(p.sender == identity for p in self.waiting.values()) >= MAX_PENDING_PER_DEVICE:
                 await self.send(identity, {"t": "error", "id": request_id, "code": "busy"})
                 return
@@ -258,20 +283,30 @@ class Relay:
                 else:
                     await self.send(identity, {"t": "error", "id": request_id, "code": "offline"})
                 return
-            self.waiting[request_id] = Pending(identity, recipient, time.monotonic())
+            self.waiting[request_id] = Pending(identity, recipient, time.monotonic(),
+                                               kind=kind)
             delivered = await self.send(recipient, {
-                "t": "request", "id": request_id, "from": identity, "data": payload["data"]
+                "t": "pair_request" if kind == "pair" else "request",
+                "id": request_id, "from": identity,
+                **({"frame": frame} if kind == "pair" else {"data": payload["data"]})
             })
             if not delivered:
                 self.waiting.pop(request_id, None)
                 await self.send(identity, {"t": "error", "id": request_id, "code": "offline"})
             else:
                 asyncio.create_task(self.expire(request_id, identity))
-        elif kind in ("reply", "reject"):
+        elif kind in ("reply", "reject", "pair_reply"):
             pending = self.waiting.get(request_id)
             if pending is None or pending.recipient != identity:
                 raise ValueError("unrecognized response or wrong replying device")
-            if kind == "reply":
+            if (pending.kind == "pair") != (kind == "pair_reply") and kind != "reject":
+                raise ValueError("wrong response protocol")
+            if kind == "pair_reply":
+                response = {"t": "pair_ack" if payload.get("ok") is True else "pair_error",
+                            "id": request_id}
+                if payload.get("ok") is not True:
+                    response["code"] = "denied"
+            elif kind == "reply":
                 frame = dec(payload.get("data"), MAX_FRAME_BYTES)
                 if len(frame) < 100:
                     raise ValueError("invalid signed response frame")
@@ -376,7 +411,9 @@ class Relay:
                         if pending.queued:
                             self.mark_queued_idle(req_id)
                         else:
-                            await self.send(pending.sender, {"t": "error", "id": req_id, "code": "offline"})
+                                await self.send(pending.sender, {
+                                    "t": "pair_error" if pending.kind == "pair" else "error",
+                                    "id": req_id, "code": "offline"})
                     elif pending.sender == identity and not pending.queued:
                         self.waiting.pop(req_id, None)
                 LOG.info("Disconnected identity %s", identity[:12])

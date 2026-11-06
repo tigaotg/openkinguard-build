@@ -71,8 +71,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 71
-        versionName = "0.10.1-startup-health"
+        versionCode = 72
+        versionName = "0.10.2-family-relay-pairing"
     }
 
     buildTypes {

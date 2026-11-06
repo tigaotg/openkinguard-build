@@ -45,7 +45,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await sock.send(json.dumps({"t": "hello", "key": enc(der), "sig": enc(signed)}))
         response = json.loads(await sock.recv())
         fingerprint = hashlib.sha256(der).hexdigest()
-        self.assertEqual(response, {"t": "ready", "fp": fingerprint})
+        self.assertEqual(response, {"t": "ready", "fp": fingerprint,
+                                    "caps": ["family-peers-v1", "family-pair-v1"]})
         return sock, fingerprint, key
 
     async def test_round_trip_routing_and_offline(self):
@@ -60,6 +61,55 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await b.close()
         await a.send(json.dumps({"t": "req", "id": "test2", "to": b_id, "data": frame}))
         self.assertEqual(json.loads(await a.recv()), {"t": "error", "id": "test2", "code": "offline"})
+
+    async def test_family_online_discovery_never_creates_relationship(self):
+        a, a_id, _ = await self.device()
+        b, b_id, _ = await self.device()
+        await a.send(json.dumps({"t": "peers", "id": "list1"}))
+        self.assertEqual(json.loads(await a.recv()), {
+            "t": "peer_list", "id": "list1", "peers": [b_id]})
+        await b.close()
+        await asyncio.sleep(0.01)
+        await a.send(json.dumps({"t": "peers", "id": "list2"}))
+        self.assertEqual(json.loads(await a.recv()), {
+            "t": "peer_list", "id": "list2", "peers": []})
+        self.assertEqual(self.relay.waiting, {})
+
+    async def test_family_pairing_forward_and_receipt(self):
+        a, a_id, _ = await self.device()
+        b, b_id, _ = await self.device()
+        frame = "signed-qr-test:" + "A" * 160
+        await a.send(json.dumps({"t": "pair", "id": "pair1", "to": b_id,
+                                 "frame": frame}))
+        self.assertEqual(json.loads(await b.recv()), {"t": "pair_request", "id": "pair1",
+                                                     "from": a_id, "frame": frame})
+        await b.send(json.dumps({"t": "pair_reply", "id": "pair1", "ok": True}))
+        self.assertEqual(json.loads(await a.recv()), {"t": "pair_ack", "id": "pair1"})
+        self.assertEqual(self.relay.waiting, {})
+
+    async def test_family_pairing_reject_and_spoof_denied(self):
+        a, _, _ = await self.device()
+        b, b_id, _ = await self.device()
+        c, _, _ = await self.device()
+        await a.send(json.dumps({"t": "pair", "id": "pair2", "to": b_id,
+                                 "frame": "Z" * 140}))
+        self.assertEqual(json.loads(await b.recv())["t"], "pair_request")
+        await c.send(json.dumps({"t": "pair_reply", "id": "pair2", "ok": True}))
+        with self.assertRaises(ConnectionClosed):
+            await c.recv()
+        await b.send(json.dumps({"t": "pair_reply", "id": "pair2", "ok": False}))
+        self.assertEqual(json.loads(await a.recv()), {
+            "t": "pair_error", "id": "pair2", "code": "denied"})
+
+    async def test_family_pair_cancellation_only_reaches_named_online_peer(self):
+        a, a_id, _ = await self.device()
+        b, b_id, _ = await self.device()
+        session = "b9274ac6-2458-40ed-9ac2-6c7ee38b9d8b"
+        await a.send(json.dumps({"t": "pair_cancel", "id": "cancel1",
+                                 "to": b_id, "session": session}))
+        self.assertEqual(json.loads(await b.recv()), {
+            "t": "pair_cancelled", "from": a_id, "session": session})
+        self.assertEqual(self.relay.waiting, {})
 
     async def test_cannot_spoof_another_devices_response(self):
         a, _, _ = await self.device()

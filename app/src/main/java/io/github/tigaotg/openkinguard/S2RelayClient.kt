@@ -29,6 +29,8 @@ internal class S2RelayClient(
     private val keys: AndroidDeviceKeyStore,
     private val onChanged: () -> Unit,
     private val acceptInbound: (ByteArray) -> ByteArray,
+    private val acceptPairing: (String, String) -> Boolean,
+    private val acceptPairingCancel: (String, String) -> Unit,
 ) {
     private val defaultClient = OkHttpClient.Builder().pingInterval(25, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS).build()
@@ -40,6 +42,8 @@ internal class S2RelayClient(
             Thread(task, "okg-relay-inbound").apply { isDaemon = true }
         }, ThreadPoolExecutor.AbortPolicy())
     private val pending = ConcurrentHashMap<String, CompletableFuture<ByteArray>>()
+    private val pendingPeers = ConcurrentHashMap<String, CompletableFuture<List<String>>>()
+    private val pendingPairing = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
     @Volatile private var socket: WebSocket? = null
     @Volatile private var enabled = false
     @Volatile private var endpoint = ""
@@ -47,6 +51,10 @@ internal class S2RelayClient(
         private set
     @Volatile var connected = false
         private set
+    @Volatile private var familyCapabilities: Set<String> = emptySet()
+    val supportsFamilyPairing: Boolean
+        get() = connected && "family-peers-v1" in familyCapabilities &&
+            "family-pair-v1" in familyCapabilities
     private var reconnectDelaySeconds = 2L
     private var epoch = 0L
 
@@ -81,6 +89,7 @@ internal class S2RelayClient(
         socket?.close(1000, "configuration changed")
         socket = null
         connected = false
+        familyCapabilities = emptySet()
         failPending("中继配置已变更")
         enabled = shouldConnect
         endpoint = parsed
@@ -117,6 +126,9 @@ internal class S2RelayClient(
                             }
                             if (currentEpoch != epoch) return
                             connected = true
+                            val capabilities = json.optJSONArray("caps")
+                            familyCapabilities = (0 until (capabilities?.length() ?: 0))
+                                .mapNotNull { capabilities?.optString(it) }.toSet()
                             reconnectDelaySeconds = 2L
                             status = "公网中继已连接（已验证本机公钥）"
                             onChanged()
@@ -154,6 +166,44 @@ internal class S2RelayClient(
                                     .put("id", id).put("code", "denied").toString())
                             }
                         }
+                        "peer_list" -> {
+                            val peers = json.getJSONArray("peers")
+                            require(peers.length() <= 64)
+                            val list = (0 until peers.length()).map { peers.getString(it) }
+                            require(list.all { it.matches(Regex("[0-9a-f]{64}")) })
+                            pendingPeers.remove(json.getString("id"))?.complete(list)
+                        }
+                        "pair_request" -> {
+                            if (!supportsFamilyPairing) return
+                            val requestId = json.getString("id")
+                            val sender = json.getString("from")
+                            val signed = json.getString("frame")
+                            require(sender.matches(Regex("[0-9a-f]{64}")) &&
+                                signed.length in 100..4000)
+                            try {
+                                inbound.execute {
+                                    val accepted = runCatching { acceptPairing(sender, signed) }
+                                        .getOrDefault(false)
+                                    webSocket.send(JSONObject().put("t", "pair_reply")
+                                        .put("id", requestId).put("ok", accepted).toString())
+                                }
+                            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                                webSocket.send(JSONObject().put("t", "pair_reply")
+                                    .put("id", requestId).put("ok", false).toString())
+                            }
+                        }
+                        "pair_cancelled" -> {
+                            if (supportsFamilyPairing) {
+                                val sender = json.getString("from")
+                                val session = json.getString("session")
+                                require(sender.matches(Regex("[0-9a-f]{64}")) &&
+                                    session.length == 36)
+                                inbound.execute { acceptPairingCancel(sender, session) }
+                            }
+                        }
+                        "pair_ack" -> pendingPairing.remove(json.getString("id"))?.complete(true)
+                        "pair_error" -> pendingPairing.remove(json.getString("id"))
+                            ?.completeExceptionally(IOException("家庭中继绑定请求未被对方接收，请重试或检查对方是否在线"))
                         "reply" -> {
                             val id = json.getString("id")
                             val bytes = unb64(json.getString("data"))
@@ -171,8 +221,11 @@ internal class S2RelayClient(
                                 "denied" -> "中继报告对端未处理请求：可能无有效关系、未授权或报文无效；没有可验签的结果，不能据此认定对方拒绝"
                                 else -> "中继未能处理请求"
                             }
-                            pending.remove(json.getString("id"))?.completeExceptionally(
-                                RelayRouteException(code, description))
+                            val error = RelayRouteException(code, description)
+                            val id = json.getString("id")
+                            pending.remove(id)?.completeExceptionally(error)
+                            pendingPairing.remove(id)?.completeExceptionally(error)
+                            pendingPeers.remove(id)?.completeExceptionally(error)
                         }
                         "queued" -> pending.remove(json.getString("id"))
                             ?.completeExceptionally(RelayQueuedException())
@@ -207,6 +260,7 @@ internal class S2RelayClient(
         if (currentEpoch != epoch || socket !== webSocket) return
         socket = null
         connected = false
+        familyCapabilities = emptySet()
         failPending("公网通信中断：$cause")
         status = if (denied) cause else "公网中继断开：${cause.take(80)}；稍后重连"
         onChanged()
@@ -249,9 +303,55 @@ internal class S2RelayClient(
         }
     }
 
+    /** Explicit user action only; listing identities is restricted to approved family nodes. */
+    fun familyPeers(): List<String> {
+        require(supportsFamilyPairing) { "当前节点不支持同家庭中继发现，请升级家庭中继" }
+        val current = socket ?: throw IOException("家庭中继未连接")
+        val id = UUID.randomUUID().toString()
+        val wait = CompletableFuture<List<String>>()
+        pendingPeers[id] = wait
+        try {
+            if (!current.send(JSONObject().put("t", "peers").put("id", id).toString()))
+                throw IOException("家庭中继连接已关闭")
+            return wait.get(8, TimeUnit.SECONDS)
+        } finally {
+            pendingPeers.remove(id)
+        }
+    }
+
+    /** A received transport ACK is not a family authorization or a cryptographic grant. */
+    fun sendPairing(recipient: String, signedFrame: String) {
+        require(supportsFamilyPairing) { "节点不支持同家庭绑定" }
+        require(recipient.matches(Regex("[0-9a-f]{64}")) && signedFrame.length in 100..4000)
+        val current = socket ?: throw IOException("家庭中继未连接")
+        val id = UUID.randomUUID().toString()
+        val wait = CompletableFuture<Boolean>()
+        pendingPairing[id] = wait
+        try {
+            if (!current.send(JSONObject().put("t", "pair").put("id", id)
+                    .put("to", recipient).put("frame", signedFrame).toString()))
+                throw IOException("家庭中继连接已关闭")
+            wait.get(21, TimeUnit.SECONDS)
+        } finally {
+            pendingPairing.remove(id)
+        }
+    }
+
+    fun cancelPairing(recipient: String, session: String) {
+        if (!supportsFamilyPairing) return
+        require(recipient.matches(Regex("[0-9a-f]{64}")) && session.length == 36)
+        socket?.send(JSONObject().put("t", "pair_cancel")
+            .put("id", UUID.randomUUID().toString()).put("to", recipient)
+            .put("session", session).toString())
+    }
+
     private fun failPending(why: String) {
         val active = pending.values.toList()
         pending.clear()
         active.forEach { it.completeExceptionally(IOException(why)) }
+        pendingPeers.values.toList().forEach { it.completeExceptionally(IOException(why)) }
+        pendingPeers.clear()
+        pendingPairing.values.toList().forEach { it.completeExceptionally(IOException(why)) }
+        pendingPairing.clear()
     }
 }

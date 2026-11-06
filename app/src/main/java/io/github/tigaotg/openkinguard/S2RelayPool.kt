@@ -3,6 +3,8 @@ package io.github.tigaotg.openkinguard
 import java.io.IOException
 import java.net.SocketTimeoutException
 
+data class FamilyRelayPeer(val fingerprint: String, val slot: Int)
+
 /**
  * At most three opt-in WSS sessions. Each trusted node independently authenticates
  * this Keystore identity, so sender and recipient may reach each other through
@@ -12,8 +14,14 @@ internal class S2RelayPool(
     keys: AndroidDeviceKeyStore,
     onChanged: () -> Unit,
     acceptInbound: (ByteArray) -> ByteArray,
+    acceptPairing: (Int, String, String) -> Boolean,
+    acceptPairingCancel: (Int, String, String) -> Unit,
 ) {
-    private val slots = List(3) { S2RelayClient(keys, onChanged, acceptInbound) }
+    private val slots = List(3) { index ->
+        S2RelayClient(keys, onChanged, acceptInbound,
+            { sender, signed -> acceptPairing(index, sender, signed) },
+            { sender, session -> acceptPairingCancel(index, sender, session) })
+    }
     @Volatile private var endpoints: List<String> = emptyList()
 
     companion object {
@@ -32,6 +40,28 @@ internal class S2RelayPool(
 
     val connected: Boolean
         get() = slots.take(endpoints.size).any { it.connected }
+
+    val familyReady: Boolean
+        get() = slots.take(endpoints.size).any { it.supportsFamilyPairing }
+
+    fun familyPeers(): List<FamilyRelayPeer> = slots.take(endpoints.size)
+        .mapIndexedNotNull { index, client ->
+            if (client.supportsFamilyPairing) index to client else null
+        }.flatMap { (index, client) ->
+            client.familyPeers().map { FamilyRelayPeer(it, index) }
+        }.distinctBy { it.fingerprint }
+
+    fun sendPairing(peer: FamilyRelayPeer, signedFrame: String) {
+        require(peer.slot in endpoints.indices && slots[peer.slot].supportsFamilyPairing) {
+            "之前发现的家庭中继已断开，请重新查找设备"
+        }
+        slots[peer.slot].sendPairing(peer.fingerprint, signedFrame)
+    }
+
+    fun cancelPairing(peer: FamilyRelayPeer, session: String) {
+        if (peer.slot in endpoints.indices) slots[peer.slot]
+            .cancelPairing(peer.fingerprint, session)
+    }
 
     val status: String
         get() {

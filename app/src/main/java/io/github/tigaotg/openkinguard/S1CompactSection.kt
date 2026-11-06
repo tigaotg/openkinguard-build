@@ -120,6 +120,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var showPairingNickname by rememberSaveable { mutableStateOf(false) }
     var showPairingRelations by rememberSaveable { mutableStateOf(false) }
     var showRemotePairingSetup by rememberSaveable { mutableStateOf(false) }
+    var showFamilyRelayPairing by rememberSaveable { mutableStateOf(false) }
     var recordView by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var lanError by remember { mutableStateOf("") }
@@ -1887,6 +1888,55 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 FeatureHelp("同一个 Wi-Fi 下发现对方后，点击邀请；对方只需同意一次。" +
                     "两台手机核对同一个8位安全码，由被救助者确认后，后续签名自动完成。" +
                     "远程加入家庭中继与建立互助关系仍是两种独立授权。", label = "怎么连接家人的手机")
+                TextButton(onClick = { showFamilyRelayPairing = !showFamilyRelayPairing }) {
+                    Text(if (showFamilyRelayPairing) "同家庭中继添加家人 · 收起 ▴" else
+                        "同家庭中继添加家人（无需同一 Wi-Fi） ▾")
+                }
+                if (showFamilyRelayPairing) {
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("通过同一个家庭中继查找设备",
+                                style = MaterialTheme.typography.titleMedium)
+                            Text("两部手机须分别扫码加入并经路由器主人批准。这里只显示同节点在线的设备指纹；" +
+                                "连接节点不代表已经成为家人，也不会自动开放求助、定位或远程协助权限。" +
+                                "对方须亲自同意，并通过通话核对8位安全码。",
+                                style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(modifier = Modifier.fillMaxWidth(),
+                                enabled = !busy && manager.familyRelayReady(), onClick = {
+                                    runTask("查找同节点家人") {
+                                        val count = manager.discoverFamilyRelayPeers()
+                                        "查找到 $count 台同家庭中继在线设备；设备指纹不是姓名"
+                                    }
+                                }) { Text("查找同节点在线设备") }
+                            InlineActionFeedback(actionFeedback["查找同节点家人"])
+                            if (!manager.familyRelayReady()) Text(
+                                "尚未连接支持此功能的家庭中继。先到设置 → 网络 → 私人节点连接；" +
+                                    "路由器端也需要更新中继插件。",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                            if (manager.familyRelayReady() && manager.familyRelayPeers().isEmpty())
+                                Text("请点击查找；如仍为空，请让家人的 App 保持联网。")
+                            manager.familyRelayPeers().forEach { peer ->
+                                val already = relations.any { it.peerFingerprint == peer.fingerprint &&
+                                    it.role == PairingRole.SUBJECT }
+                                Text("设备指纹：${peer.fingerprint.take(12)}… · 家庭节点${peer.slot + 1}")
+                                OutlinedButton(modifier = Modifier.fillMaxWidth(),
+                                    enabled = !busy && !already && manager.pendingPairing() == null &&
+                                        manager.remotePairingSession() == null,
+                                    onClick = {
+                                        runTask("同节点邀请家人") {
+                                            manager.inviteOnFamilyRelay(peer)
+                                            "已发送签名邀请，等待对方同意；请在两台手机上核对安全码"
+                                        }
+                                    }) { Text(if (already) "已是我的救助者" else "邀请这台设备成为我的救助者") }
+                                InlineActionFeedback(actionFeedback["同节点邀请家人"])
+                            }
+                            Text("如果需要反向帮助关系，请在另一台手机上发起邀请。",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 val remoteSession = manager.remotePairingSession()
                 TextButton(onClick = { showRemotePairingSetup = !showRemotePairingSetup }) {
                     Text(if (showRemotePairingSetup || remoteSession != null)
@@ -2126,6 +2176,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             "新设备未验签，双方必须核对安全码")
                     }
                 } else {
+                    val usingFamilyRelay = manager.canContinueFamilyPairing()
+                    if (usingFamilyRelay) Text("正在通过家庭中继交换签名邀请（需双方联网）")
                     Text("绑定进度：${pairingPhaseName(pairing.phase)}")
                     Text(if (pairing.role == PairingRole.SUBJECT)
                         "本轮我是被救助者" else "本轮我是救助者")
@@ -2138,19 +2190,21 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         Text("帮助关系已经保存")
                         Button(enabled = !busy, onClick = {
                             runTask("完成本轮绑定") {
-                                manager.cancelLanPairing()
+                                if (usingFamilyRelay) manager.cancelFamilyPairing()
+                                else manager.cancelLanPairing()
                                 "关系已保留。若要双向求助，请由另一台手机反向再绑定一次"
                             }
                         }) { Text("保留关系 · 开始下一轮") }
                         InlineActionFeedback(actionFeedback["完成本轮绑定"])
-                    } else if (!manager.canContinueLanPairing()) {
-                        Text("局域网配对会话已中断，可取消后重新开始")
+                    } else if (!manager.canContinueLanPairing() && !usingFamilyRelay) {
+                        Text("绑定会话已中断，可取消后重新开始")
                     } else if (pairing.phase == PairingPhase.REVIEW_INVITE) {
                         Text("对方邀请你成为救助者。确认认识此人后，同意邀请；" +
                             "稍后两部手机还要核对一次安全码。")
                         Button(enabled = !busy, onClick = {
                             runTask("同意局域网邀请") {
-                                manager.confirmLanPairing()
+                                if (usingFamilyRelay) manager.confirmFamilyPairing()
+                                else manager.confirmLanPairing()
                                 "已同意邀请，等待对方核对安全码"
                             }
                         }) { Text("同意成为对方的救助者") }
@@ -2165,7 +2219,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             }
                             Button(enabled = checked && code != null && !busy, onClick = {
                                 runTask("核对安全码并绑定") {
-                                    manager.confirmLanPairing()
+                                    if (usingFamilyRelay) manager.confirmFamilyPairing()
+                                    else manager.confirmLanPairing()
                                     "安全码已核对，正在自动交换最终签名与回执"
                                 }
                             }) { Text("安全码一致 · 完成绑定") }
@@ -2175,7 +2230,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         Text("已收到对方授权，正在自动生成最终签名回执。")
                         OutlinedButton(enabled = !busy, onClick = {
                             runTask("恢复自动签名") {
-                                manager.confirmLanPairing()
+                                if (usingFamilyRelay) manager.confirmFamilyPairing()
+                                else manager.confirmLanPairing()
                                 "已完成最终签名回执"
                             }
                         }) { Text("如果长时间停留，点此继续") }
@@ -2183,7 +2239,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     } else if (pairing.phase == PairingPhase.ACK_TO_SHOW) {
                         Button(enabled = !busy, onClick = {
                             runTask("完成绑定") {
-                                manager.finishLanPairing()
+                                if (usingFamilyRelay) manager.retryFamilyPairing()
+                                else manager.finishLanPairing()
                                 "本轮已完成，请检查双方帮助关系"
                             }
                         }) { Text("对方显示完成 · 结束本轮") }
@@ -2191,10 +2248,12 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     }
                     if (pairing.phase in listOf(PairingPhase.WAIT_RESPONSE,
                             PairingPhase.WAIT_GRANT, PairingPhase.WAIT_ACK,
-                            PairingPhase.ACK_TO_SHOW) && manager.canContinueLanPairing()) {
+                            PairingPhase.ACK_TO_SHOW) &&
+                        (manager.canContinueLanPairing() || usingFamilyRelay)) {
                         OutlinedButton(enabled = !busy, onClick = {
                             runTask("重发签名消息") {
-                                manager.retryLanPairingStep()
+                                if (usingFamilyRelay) manager.retryFamilyPairing()
+                                else manager.retryLanPairingStep()
                                 "同一条已签名消息已重发，没有跳过任何确认步骤"
                             }
                         }) { Text("对方没反应？重发上一步") }
@@ -2203,9 +2262,12 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     if (pairing.phase != PairingPhase.COMPLETE) {
                         TextButton(enabled = !busy, onClick = {
                             runTask("取消本轮配对") {
-                                val both = manager.cancelLanPairing()
+                                val both = if (usingFamilyRelay) {
+                                    manager.cancelFamilyPairing()
+                                    false
+                                } else manager.cancelLanPairing()
                                 if (both) "本轮双方都已退出；此前有效关系不受影响" else
-                                    "本机已退出，对方暂未确认取消；此前有效关系不受影响"
+                                    "本机已退出，请让对方也取消未完成的邀请；此前有效关系不受影响"
                             }
                         }) { Text("取消当前配对") }
                         InlineActionFeedback(actionFeedback["取消本轮配对"])

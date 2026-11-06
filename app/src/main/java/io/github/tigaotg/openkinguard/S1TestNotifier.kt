@@ -21,6 +21,7 @@ internal object S1TestNotifier {
     private const val SAFETY_ZONE_CHANNEL_ID = "okg_s3_safety_zone_v1"
     private const val HEART_PILOT_CHANNEL_ID = "okg_s6_heart_pilot_local_v1"
     private const val REMOTE_ASSIST_END_CHANNEL_ID = "okg_remote_assist_disconnect_v1"
+    private const val FAMILY_INVITE_CHANNEL_ID = "okg_family_invitation_v1"
 
     private fun baseStatus(context: Context): String {
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -105,6 +106,13 @@ internal object S1TestNotifier {
     fun showRemoteAssistEnded(context: Context, text: String): String =
         send(context, text, REMOTE_ASSIST_END_CHANNEL_ID, "远程协助连接中断",
             NotificationManager.IMPORTANCE_HIGH, "remote-assist-disconnected")
+
+    /** No sensitive information; the invite alone never establishes a trusted relationship. */
+    fun showFamilyInvitation(context: Context, fingerprint: String): String =
+        send(context, "同一家庭中继的设备 ${fingerprint.take(12)}… 邀请您成为救助者。" +
+            "请打开‘连接家人’亲自确认，并核对8位安全码。",
+            FAMILY_INVITE_CHANNEL_ID, "新家人绑定邀请",
+            NotificationManager.IMPORTANCE_HIGH, "family-invite:${fingerprint.take(64)}")
 
     fun heartPilotNotificationStatus(context: Context): String {
         val base = baseStatus(context)

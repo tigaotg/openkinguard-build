@@ -66,7 +66,9 @@ class S1GuardManager(context: Context) {
     private val keys = AndroidDeviceKeyStore()
     private val store = S1CaseStore(app)
     private val gps = S3GpsCapture(app)
-    private val relay = S2RelayPool(keys, { signal() }, { forwardRelayInbound(it) })
+    private val relay = S2RelayPool(keys, { signal() }, { forwardRelayInbound(it) },
+        { slot, sender, signed -> receiveFamilyPairing(slot, sender, signed) },
+        { slot, sender, session -> receiveFamilyPairingCancel(slot, sender, session) })
     private val publicNostr = S2NostrTransport(app, keys, pairings, { signal() })
     private val remotePairing = RemotePairingManager(app, keys, pairings, publicNostr,
         { signal() })
@@ -102,6 +104,8 @@ class S1GuardManager(context: Context) {
     @Volatile private var changed: (() -> Unit)? = null
     @Volatile private var discoveryError = ""
     @Volatile private var lanPairingAddress: String? = null
+    @Volatile private var familyPairingPeer: FamilyRelayPeer? = null
+    @Volatile private var familyDiscoveredPeers: List<FamilyRelayPeer> = emptyList()
     @Volatile private var lanPairingToken: String? = null
     @Volatile private var lanPairingSessionId: String? = null
     @Volatile private var lanPairingRelationId: String? = null
@@ -156,6 +160,153 @@ class S1GuardManager(context: Context) {
     fun relayStatus(): String = relay.status + "；" + publicNostr.status + "；" + direct.status
     // S5: Nostr is signaling-only; it must NEVER qualify as a business relay.
     fun relayConnected(): Boolean = relay.connected
+    fun familyRelayReady(): Boolean = relay.familyReady
+    fun familyRelayPeers(): List<FamilyRelayPeer> = familyDiscoveredPeers
+    fun canContinueFamilyPairing(): Boolean = familyPairingPeer != null
+
+    /** Discovery does not create a helping relationship or grant any data access. */
+    fun discoverFamilyRelayPeers(): Int {
+        val fresh = relay.familyPeers().filter { peer ->
+            peer.fingerprint != keys.createOrLoad().fingerprint
+        }
+        familyDiscoveredPeers = fresh
+        signal()
+        return fresh.size
+    }
+
+    fun inviteOnFamilyRelay(peer: FamilyRelayPeer) {
+        require(familyDiscoveredPeers.contains(peer)) { "设备列表已变化，请重新查找" }
+        require(relay.familyReady) { "家庭中继尚未连接" }
+        require(relations().none { it.peerFingerprint == peer.fingerprint &&
+            it.role == PairingRole.SUBJECT }) { "已建立同一方向的帮助关系" }
+        val invitation: String
+        synchronized(pairingGuard) {
+            require(pairings.snapshot().session == null && lanPairingAddress == null &&
+                familyPairingPeer == null && remotePairing.current() == null) {
+                "请先结束当前邀请"
+            }
+            invitation = requireNotNull(pairings.createInvitation().session).invite
+            familyPairingPeer = peer
+        }
+        signal()
+        sendFamilyPairing(invitation)
+    }
+
+    private fun receiveFamilyPairing(slot: Int, sender: String, signed: String): Boolean {
+        try {
+            val frame = PairingQrProtocol.decodeAndVerify(signed, System.currentTimeMillis()).frame
+            require(frame.senderFingerprint == sender) { "中继声称的发送者与签名不一致" }
+            val phase: PairingPhase?
+            synchronized(pairingGuard) {
+                val peer = familyPairingPeer
+                val session = pairings.snapshot().session
+                if (peer == null) {
+                    require(session == null && lanPairingAddress == null &&
+                        remotePairing.current() == null && pendingHelpOffer() == null &&
+                        frame.step == PairingStep.INVITE) { "正在处理其他绑定" }
+                    require(relay.familyReady) { "家庭中继已断开" }
+                } else {
+                    require(peer.fingerprint == sender && peer.slot == slot && session != null) {
+                        "请求来自其他设备或中继"
+                    }
+                }
+                val saved = pairings.scan(signed)
+                if (peer == null) familyPairingPeer = FamilyRelayPeer(sender, slot)
+                phase = saved.session?.phase
+            }
+            store.recordHandshake("同节点", frame.step.name, frame.relationId, "已验签",
+                "家庭中继转发签名绑定帧；仍需对方同意和8位安全码核对")
+            if (phase == PairingPhase.REVIEW_INVITE) {
+                runCatching { S1TestNotifier.showFamilyInvitation(app, sender) }
+            }
+            signal()
+            if (phase == PairingPhase.REVIEW_GRANT) {
+                // The helper previously approved INVITE. The final signed receipt
+                // is now generated after the inbound frame has been acknowledged.
+                Thread({
+                    runCatching { confirmFamilyPairing() }.onFailure { error ->
+                        diagnostic("同节点自动签名", error.message ?: "发送失败，可手动重试")
+                    }
+                }, "okg-family-pair-ack").apply { isDaemon = true; start() }
+            }
+            return true
+        } catch (error: Exception) {
+            diagnostic("同节点绑定", error.message ?: "无效签名或会话冲突")
+            return false
+        }
+    }
+
+    fun confirmFamilyPairing() {
+        require(familyPairingPeer != null) { "家庭中继绑定会话已失效" }
+        val updated = pairings.confirm().session ?: error("没有待确认的绑定")
+        val frame = when (updated.phase) {
+            PairingPhase.WAIT_GRANT -> updated.response
+            PairingPhase.WAIT_ACK -> updated.grant
+            PairingPhase.ACK_TO_SHOW -> updated.ack
+            else -> error("当前步骤不支持确认")
+        }
+        sendFamilyPairing(frame)
+        if (updated.phase == PairingPhase.ACK_TO_SHOW) {
+            pairings.finishHelperAfterAckShown()
+            familyPairingPeer = null
+        }
+        signal()
+    }
+
+    fun retryFamilyPairing() {
+        val session = requireNotNull(pairings.snapshot().session) { "没有待重发的消息" }
+        val frame = when (session.phase) {
+            PairingPhase.WAIT_RESPONSE -> session.invite
+            PairingPhase.WAIT_GRANT -> session.response
+            PairingPhase.WAIT_ACK -> session.grant
+            PairingPhase.ACK_TO_SHOW -> session.ack
+            else -> error("现在无需重发")
+        }
+        sendFamilyPairing(frame)
+        if (session.phase == PairingPhase.ACK_TO_SHOW) {
+            pairings.finishHelperAfterAckShown()
+            familyPairingPeer = null
+        }
+        signal()
+    }
+
+    fun cancelFamilyPairing() {
+        val peer = familyPairingPeer
+        val sessionId = pairings.snapshot().session?.let { session ->
+            runCatching { PairingQrProtocol.decodeAndVerify(session.invite,
+                System.currentTimeMillis()).frame.sessionId }.getOrNull()
+        }
+        synchronized(pairingGuard) {
+            pairings.cancelPending()
+            familyPairingPeer = null
+        }
+        if (peer != null && sessionId != null) relay.cancelPairing(peer, sessionId)
+        signal()
+    }
+
+    private fun receiveFamilyPairingCancel(slot: Int, sender: String, sessionId: String) {
+        synchronized(pairingGuard) {
+            val peer = familyPairingPeer ?: return
+            val session = pairings.snapshot().session ?: return
+            if (peer.slot != slot || peer.fingerprint != sender ||
+                session.phase == PairingPhase.COMPLETE) return
+            val expected = runCatching { PairingQrProtocol.decodeAndVerify(session.invite,
+                System.currentTimeMillis()).frame.sessionId }.getOrNull()
+            if (sessionId != expected) return
+            pairings.cancelPending()
+            familyPairingPeer = null
+        }
+        store.recordHandshake("同节点", "CANCEL", "", "对方取消", "对端结束未完成的家庭绑定")
+        signal()
+    }
+
+    private fun sendFamilyPairing(frame: String) {
+        val peer = requireNotNull(familyPairingPeer) { "同节点设备已失联" }
+        // Re-use exactly the same signed frame on retries. A relay transport
+        // receipt only proves receipt; it never authorizes a helping relationship.
+        relay.sendPairing(peer, frame)
+        signal()
+    }
     /** Independent diagnostics so a private relay cannot mask public-node failures. */
     fun publicRelayStatus(): String = publicNostr.status
     fun publicRelayReady(): Boolean = publicNostr.connected
