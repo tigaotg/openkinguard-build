@@ -17,6 +17,14 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // One-off diagnostic build has a separate app ID and ephemeral CI key.
+        // Never re-sign the installed S1 diagnostic package with a new key.
+        create("familyRelayTest") {
+            storeFile = rootProject.file("private-signing/openkinguard-family-relay-test.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         // A new, isolated development certificate. NEVER use it to upgrade the
         // existing healthPreview/S1 identity. Keep the actual keystore private.
         create("isolatedHealthPilot") {
@@ -80,6 +88,14 @@ android {
             // The earlier S1 debug-signing private key was not preserved.
             // This field-diagnostic build stays separate from the original S1 app.
             applicationIdSuffix = ".s1diagnostic"
+        }
+        create("familyRelayTest") {
+            // Disposable trial app, installed next to BOTH pilotV4 and S1 diagnostic.
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".familyrelaytest"
+            versionNameSuffix = "-oneoff-test"
+            signingConfig = signingConfigs.getByName("familyRelayTest")
+            matchingFallbacks += listOf("debug")
         }
         create("healthPreview") {
             // An independently installed test app: preserve the existing S1/0.6.4
