@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
     paths:
+      # Automatically exercise Android 10/16 startup when app code changes.
+      # This uses disposable emulator identities; no user's keys/data are read.
+      - 'app/**'
       - '.github/workflows/android-emulator-smoke.yml'
       - 'scripts/ci/android-emulator-smoke.sh'
 
