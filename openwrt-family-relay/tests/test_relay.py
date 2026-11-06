@@ -87,6 +87,24 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(await a.recv()), {"t": "pair_ack", "id": "pair1"})
         self.assertEqual(self.relay.waiting, {})
 
+    async def test_offline_pairing_never_queues_even_with_queue_flag(self):
+        a, _, _ = await self.device()
+        b, b_id, _ = await self.device()
+        await b.close()
+        await asyncio.sleep(0.01)
+        # A malicious/older client can add a queue flag, but pairing must
+        # remain live-only and must not crash the authenticated connection.
+        await a.send(json.dumps({"t": "pair", "id": "pair-offline", "to": b_id,
+                                 "frame": "S" * 160, "queue": True}))
+        self.assertEqual(json.loads(await a.recv()), {
+            "t": "error", "id": "pair-offline", "code": "offline"})
+        self.assertEqual(self.relay.offline, [])
+        self.assertEqual(self.relay.waiting, {})
+        # The sender can still ask for online devices after that rejection.
+        await a.send(json.dumps({"t": "peers", "id": "after-offline"}))
+        self.assertEqual(json.loads(await a.recv()), {
+            "t": "peer_list", "id": "after-offline", "peers": []})
+
     async def test_family_pairing_reject_and_spoof_denied(self):
         a, _, _ = await self.device()
         b, b_id, _ = await self.device()

@@ -275,7 +275,11 @@ class Relay:
                 await self.send(identity, {"t": "error", "id": request_id, "code": "offline"})
                 return
             if recipient not in self.clients:
-                if payload.get("queue") is True:
+                # Only already-authorized application messages may use the
+                # existing bounded RAM queue. A pairing frame has no "data"
+                # field and must never be delivered to an offline device:
+                # consent and safety-code review require a live exchange.
+                if kind == "req" and payload.get("queue") is True:
                     accepted = await self.enqueue(identity, recipient, payload["data"])
                     await self.send(identity, {"t": "queued" if accepted else "error",
                                                "id": request_id,

@@ -5,6 +5,29 @@ import java.net.SocketTimeoutException
 
 data class FamilyRelayPeer(val fingerprint: String, val slot: Int)
 
+/** A failed family relay must not hide devices discovered on another healthy node. */
+internal object FamilyRelayDiscovery {
+    fun collect(nodes: List<Pair<Int, () -> List<String>>>): List<FamilyRelayPeer> {
+        val found = mutableListOf<FamilyRelayPeer>()
+        var succeeded = 0
+        var failed = 0
+        nodes.forEach { (slot, query) ->
+            try {
+                found += query().map { FamilyRelayPeer(it, slot) }
+                succeeded++
+            } catch (_: Exception) {
+                failed++
+            }
+        }
+        // If one node failed and the others found nobody, an empty list would
+        // misleadingly say that the family has no online devices.
+        if (failed > 0 && (succeeded == 0 || found.isEmpty())) {
+            throw IOException("部分家庭中继查询失败，在线设备列表可能不完整，请检查节点连接后重试")
+        }
+        return found.distinctBy { it.fingerprint }
+    }
+}
+
 /**
  * At most three opt-in WSS sessions. Each trusted node independently authenticates
  * this Keystore identity, so sender and recipient may reach each other through
@@ -44,12 +67,10 @@ internal class S2RelayPool(
     val familyReady: Boolean
         get() = slots.take(endpoints.size).any { it.supportsFamilyPairing }
 
-    fun familyPeers(): List<FamilyRelayPeer> = slots.take(endpoints.size)
+    fun familyPeers(): List<FamilyRelayPeer> = FamilyRelayDiscovery.collect(slots.take(endpoints.size)
         .mapIndexedNotNull { index, client ->
-            if (client.supportsFamilyPairing) index to client else null
-        }.flatMap { (index, client) ->
-            client.familyPeers().map { FamilyRelayPeer(it, index) }
-        }.distinctBy { it.fingerprint }
+            if (client.supportsFamilyPairing) index to { client.familyPeers() } else null
+        })
 
     fun sendPairing(peer: FamilyRelayPeer, signedFrame: String) {
         require(peer.slot in endpoints.indices && slots[peer.slot].supportsFamilyPairing) {
