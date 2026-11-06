@@ -27,6 +27,25 @@ assert_app_alive() {
 start_app() {
   local scenario=$1
   adb shell am start -W -n "$component" | tee -a "$logs/activity-start.txt"
+  if (( api_level >= 33 )); then
+    # Android 13+ may keep its notification permission activity on top after
+    # pm revoke + force-stop. Explicitly dismiss that OS-owned sheet as a
+    # simulated user before checking the app process. Otherwise am start -W
+    # only resumes the stale permission-controller task and creates a false
+    # "app did not start" failure even though no app crash occurred.
+    local attempt resumed
+    for attempt in {1..3}; do
+      resumed=$(adb shell dumpsys activity activities | grep -m1 'topResumedActivity=' || true)
+      if [[ "$resumed" != *GrantPermissionsActivity* ]]; then
+        break
+      fi
+      printf 'INFO: dismissing OS permission sheet for %s\n' "$scenario" \
+        | tee -a "$logs/results.txt"
+      adb shell input keyevent KEYCODE_BACK
+      sleep 1
+      adb shell am start -W -n "$component" | tee -a "$logs/activity-start.txt"
+    done
+  fi
   assert_app_alive "$scenario"
 }
 
