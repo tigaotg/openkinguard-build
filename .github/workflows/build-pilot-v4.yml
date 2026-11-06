@@ -2,6 +2,12 @@ name: OpenKinGuard Pilot V4 APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/family-relay-pairing-0.10.2
+    paths:
+      - '.github/workflows/build-pilot-v4.yml'
+      - 'app/**'
 
 permissions:
   contents: read
