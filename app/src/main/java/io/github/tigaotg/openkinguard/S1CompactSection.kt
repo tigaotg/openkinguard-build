@@ -2600,6 +2600,19 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                 verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 Text("后台监听状态", style = MaterialTheme.typography.titleMedium)
                                 Text(check.statusLabel)
+                                Text("前台服务：" + check.health.serviceState.displayLabel,
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("本机调度器：" + check.health.schedulerState.displayLabel,
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("本机 TCP 监听：" + check.health.tcpListenerState.displayLabel,
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("系统网络：" + check.health.networkState.displayLabel,
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("远端家属可达性：本阶段不检测；本机服务和网络状态不能证明家属在线。",
+                                    style = MaterialTheme.typography.bodySmall)
+                                if (check.health.recoveryAttemptCount > 0) Text(
+                                    "本次进程自动恢复尝试：${check.health.recoveryAttemptCount}/${BackgroundRecoveryPolicy.MAX_AUTOMATIC_ATTEMPTS}",
+                                    style = MaterialTheme.typography.bodySmall)
                                 Text("电池优化：" + if (check.batteryExempt) "已获系统豁免" else
                                     "仍受系统省电规则管理", style = MaterialTheme.typography.bodySmall)
                                 Text("后台执行：" + if (check.backgroundRestricted)
@@ -3173,6 +3186,21 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 HorizontalDivider()
                 Text("后台连接", style = MaterialTheme.typography.titleLarge)
                 Text(backgroundReadiness?.statusLabel ?: "正在检测后台监听")
+                backgroundReadiness?.let { check ->
+                    Text("前台服务：" + check.health.serviceState.displayLabel,
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("本机调度器：" + check.health.schedulerState.displayLabel,
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("本机 TCP 监听：" + check.health.tcpListenerState.displayLabel,
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("系统网络：" + check.health.networkState.displayLabel,
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("家属设备是否可达：本阶段不检测，不能由本机状态推断。",
+                        style = MaterialTheme.typography.bodySmall)
+                    check.health.lastErrorDetail?.takeIf { it.isNotBlank() }?.let {
+                        Text("最近错误：" + it, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
                 FeatureHelp("手动开启后，可在离开本应用时继续尝试收发签名消息，并按你设置的" +
                     "${snapshot.history.lossWarningMinutes}分钟、${snapshot.history.lossCriticalMinutes}分钟检测失联。" +
                     "此功能不是实时定位或救援保障；系统省电限制、断网或强制停止仍可能中断服务。")
