@@ -49,6 +49,8 @@ case "${1:---check}" in
 		;;
 	--install)
 		check_router
+		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/VERSION" \
+			/usr/lib/openkinguard-relay/VERSION 0644
 		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/relay.py" \
 			/usr/lib/openkinguard-relay/relay.py 0644
 		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/node_identity.py" \
@@ -79,7 +81,8 @@ case "${1:---check}" in
 		/etc/init.d/rpcd restart
 		/etc/init.d/uhttpd reload || :
 		/etc/init.d/openkinguard-relay restart
-		echo '安装完成。服务默认关闭，WAN 防火墙未改动。'
+		echo "安装完成。家庭中继插件版本：$(cat /usr/lib/openkinguard-relay/VERSION 2>/dev/null || echo unknown)"
+		echo '服务启用状态由 /etc/config/openkinguard-relay 决定；WAN 防火墙未改动。'
 		echo 'LuCI → 服务 → OpenKinGuard 家庭中继。'
 		echo '免域名家庭节点可执行：sh /tmp/openwrt-family-relay/install-on-openwrt.sh --setup-no-domain'
 		echo '扫码加入需额外安装 QR 生成器：apk -U add qrencode；不会自动开放 WAN。'
