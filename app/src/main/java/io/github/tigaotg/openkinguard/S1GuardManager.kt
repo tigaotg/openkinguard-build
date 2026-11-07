@@ -1716,7 +1716,7 @@ class S1GuardManager(context: Context) {
     }
 
     /** Reports the actual bound socket and accept-loop thread, not a scheduler heartbeat. */
-    @Synchronized fun tcpListenerHealth(): BackgroundTcpListenerState {
+    @Synchronized internal fun tcpListenerHealth(): BackgroundTcpListenerState {
         val server = listener
         if (listenerUnexpectedlyClosed) return BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY
         if (server == null) return if (listenerFailureCode == "TCP_BIND_FAILED")
