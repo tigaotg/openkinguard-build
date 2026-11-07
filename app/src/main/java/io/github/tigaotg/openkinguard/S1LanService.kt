@@ -80,14 +80,19 @@ class S1LanService : Service() {
         fun requestStart(context: Context): String {
             BackgroundConsentStore.set(context, true)
             BackgroundMonitorHealth.resetRecoveryAttempts()
+            BackgroundMonitorHealth.recordRecoveryTrigger(BackgroundRecoveryTrigger.USER_REQUEST)
             return startRequested(context, automatic = false)
         }
 
         /** A bounded recovery request for users who previously opted in. */
-        fun requestAutoRecovery(context: Context): String {
+        fun requestAutoRecovery(
+            context: Context,
+            trigger: BackgroundRecoveryTrigger = BackgroundRecoveryTrigger.APP_FOREGROUND
+        ): String {
             val consent = BackgroundConsentStore.get(context)
             if (consent != BackgroundConsent.ENABLED)
                 return "没有有效的后台监听授权，不会自动启动"
+            BackgroundMonitorHealth.recordRecoveryTrigger(trigger)
             val probe = runtimeProbe()
             if (probe.healthy) return "本机后台服务正常运行"
             if (probe.starting) return "后台监听正在启动，暂不重复提交请求"
@@ -184,6 +189,11 @@ class S1LanService : Service() {
             )
             stopSelf()
             return START_NOT_STICKY
+        }
+        if (intent == null) {
+            BackgroundMonitorHealth.recordRecoveryTrigger(
+                BackgroundRecoveryTrigger.SYSTEM_STICKY_RESTART
+            )
         }
 
         val existingScheduler = scheduler
