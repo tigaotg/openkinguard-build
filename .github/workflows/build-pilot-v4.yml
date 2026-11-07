@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - codex/family-relay-pairing-0.10.2
+      - codex/app-relay-audit-0.10.4-relay-0.3.7
     paths:
       - '.github/workflows/build-pilot-v4.yml'
       - 'app/**'
@@ -65,7 +66,7 @@ jobs:
       - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-0.10.2-PilotV4-signed
+          name: OpenKinGuard-0.10.4-PilotV4-signed
           path: app/build/outputs/apk/pilotV4/*.apk
           if-no-files-found: error
           retention-days: 14
