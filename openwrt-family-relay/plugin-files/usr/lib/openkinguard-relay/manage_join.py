@@ -43,6 +43,15 @@ def restart_relay_fail_closed() -> None:
         raise
 
 
+def remove_persisted(fingerprint: str) -> None:
+    """Remove one UCI authorization, without touching any other family device."""
+    if fingerprint not in allowed_fingerprints():
+        return
+    checked_call("uci", "-q", "del_list",
+                 "openkinguard-relay.main.allowed_device=" + fingerprint)
+    checked_call("uci", "commit", "openkinguard-relay")
+
+
 def ensure_state_dir() -> None:
     account = pwd.getpwnam("nobody")
     STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -89,19 +98,15 @@ def change_device(action: str, fingerprint: str, store: EnrollmentStore,
     if action == "revoke":
         if fingerprint not in allowed:
             raise ValueError("该设备已经不在授权名单中")
+        # Stop first: every failure after this point leaves the old in-memory
+        # allowlist unable to continue serving the device being revoked.
+        checked_call("/etc/init.d/openkinguard-relay", "stop")
         checked_call("uci", "-q", "del_list",
                      "openkinguard-relay.main.allowed_device=" + fingerprint)
         checked_call("uci", "commit", "openkinguard-relay")
         # Also invalidate the temporary approval that would otherwise bypass UCI.
-        # If this write fails, stop the relay: its old in-memory allowlist is unsafe.
-        try:
-            store.revoke_approval(fingerprint)
-        except Exception:
-            try:
-                checked_call("/etc/init.d/openkinguard-relay", "stop")
-            except Exception:
-                pass
-            raise
+        # On failure the relay stays stopped; do not restore the old authorization.
+        store.revoke_approval(fingerprint)
         # Registry metadata is secondary. Even if it cannot be written, reload the
         # UCI allowlist and invalidate existing sessions before reporting the error.
         try:
@@ -127,9 +132,22 @@ def change_device(action: str, fingerprint: str, store: EnrollmentStore,
             raise ValueError("该设备已处于允许连接状态")
         if not registry.was_approved(fingerprint):
             raise ValueError("只能恢复此前明确取消的设备")
-        persist(fingerprint)
-        registry.approve(fingerprint)
-        checked_call("/etc/init.d/openkinguard-relay", "restart")
+        checked_call("/etc/init.d/openkinguard-relay", "stop")
+        try:
+            persist(fingerprint)
+            registry.approve(fingerprint)
+        except Exception:
+            # A partial restore must not leave a durable UCI allowlist entry.
+            try:
+                remove_persisted(fingerprint)
+                restart_relay_fail_closed()
+            except Exception:
+                try:
+                    checked_call("/etc/init.d/openkinguard-relay", "stop")
+                except Exception:
+                    pass
+            raise
+        restart_relay_fail_closed()
         return {"ok": True, "fingerprint": fingerprint, "status": "approved"}
     raise ValueError("unsupported device action")
 
@@ -243,11 +261,29 @@ def main() -> None:
                             if item["id"] == args.request_id), None)
             if request is None:
                 raise ValueError("申请不存在或已过期")
+            approval_started = False
+            was_allowed = request["fingerprint"] in allowed_fingerprints()
             def approve_and_record(fingerprint: str) -> None:
+                nonlocal approval_started
+                approval_started = True
                 persist(fingerprint)
                 registry.approve(fingerprint, request["nickname"], request["model"])
-            fp = store.decide(args.request_id, approved,
-                              persist_approval=approve_and_record if approved else None)
+            try:
+                fp = store.decide(args.request_id, approved,
+                                  persist_approval=approve_and_record if approved else None)
+            except Exception:
+                # EnrollmentStore writes its status after the durable UCI/registry
+                # operations. Roll back a newly added UCI entry if that final write fails.
+                if approved and approval_started and not was_allowed:
+                    try:
+                        remove_persisted(request["fingerprint"])
+                        registry.revoke(request["fingerprint"])
+                    except Exception:
+                        try:
+                            checked_call("/etc/init.d/openkinguard-relay", "stop")
+                        except Exception:
+                            pass
+                raise
             result = {"ok": True, "fingerprint": fp,
                       "status": "approved" if approved else "rejected"}
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
