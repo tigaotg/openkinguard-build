@@ -137,8 +137,13 @@ class S1LanService : Service() {
         fun requestStop(context: Context): String = runCatching {
             startupFailure = null
             BackgroundConsentStore.set(context, false)
-            context.startService(Intent(context, S1LanService::class.java)
-                .setAction(ACTION_STOP))
+            val stopped = context.stopService(Intent(context, S1LanService::class.java))
+            if (!stopped) {
+                BackgroundMonitorHealth.markSchedulerStopped()
+                BackgroundMonitorHealth.markServiceStopped(
+                    userInitiated = true, nowElapsed = SystemClock.elapsedRealtime()
+                )
+            }
             "正在停止持续监听，等待系统确认"
         }.getOrElse { failure ->
             "停止请求失败：${failure.javaClass.simpleName}"
@@ -432,7 +437,7 @@ class S1LanService : Service() {
         BackgroundMonitorHealth.markStartupFailure(
             stage, code, detail, blockedBySystem, SystemClock.elapsedRealtime()
         )
-        Log.w("OpenKinGuard", detail, cause)
+        Log.w("OpenKinGuard", detail, error)
     }
 
     private fun isSystemStartBlocked(error: Throwable): Boolean {
