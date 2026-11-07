@@ -2602,6 +2602,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                 Text(check.statusLabel)
                                 Text("前台服务：" + check.health.serviceState.displayLabel,
                                     style = MaterialTheme.typography.bodySmall)
+                                Text("启动阶段：" + check.health.startupStage.displayLabel,
+                                    style = MaterialTheme.typography.bodySmall)
                                 Text("本机调度器：" + check.health.schedulerState.displayLabel,
                                     style = MaterialTheme.typography.bodySmall)
                                 Text("本机 TCP 监听：" + check.health.tcpListenerState.displayLabel,
@@ -3195,6 +3197,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 Text(backgroundReadiness?.statusLabel ?: "正在检测后台监听")
                 backgroundReadiness?.let { check ->
                     Text("前台服务：" + check.health.serviceState.displayLabel,
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("启动阶段：" + check.health.startupStage.displayLabel,
                         style = MaterialTheme.typography.bodySmall)
                     Text("本机调度器：" + check.health.schedulerState.displayLabel,
                         style = MaterialTheme.typography.bodySmall)
