@@ -64,6 +64,16 @@ class BackgroundMonitorHealthModelTest {
             BackgroundMonitorHealthPolicy.schedulerState(state, 130_001L))
     }
 
+    @Test fun timedOutTaskRemainsStalledEvenAfterItsSchedulerIsClosed() {
+        val state = healthySnapshot().copy(
+            schedulerClosed = true,
+            taskRunning = true,
+            lastTickStartedElapsed = 10_000L
+        )
+        assertEquals(BackgroundSchedulerState.STALLED,
+            BackgroundMonitorHealthPolicy.schedulerState(state, 130_001L))
+    }
+
     @Test fun recoveryUsesBoundedBackoffAndStopsAfterThreeAttempts() {
         val first = BackgroundRecoveryPolicy.evaluate(
             BackgroundConsent.ENABLED, false, 0, 0L, 10_000L
