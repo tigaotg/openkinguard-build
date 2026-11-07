@@ -102,6 +102,28 @@ class BackgroundMonitorHealthModelTest {
         ).allowed)
     }
 
+    @Test fun processExitDiagnosticsDoNotOverstateForceStopDetection() {
+        val userRequested = BackgroundProcessExitSnapshot(
+            kind = BackgroundProcessExitKind.USER_REQUESTED
+        )
+        assertTrue(userRequested.displayLabel.contains("可能是强行停止"))
+        assertTrue(userRequested.displayLabel.contains("最近任务移除"))
+        assertTrue(BackgroundProcessExitSnapshot().displayLabel.contains("Android 10"))
+        assertEquals("应用升级导致旧进程退出",
+            BackgroundProcessExitSnapshot(
+                kind = BackgroundProcessExitKind.PACKAGE_UPDATED
+            ).displayLabel)
+    }
+
+    @Test fun recoveryTriggerLabelsKeepSystemEventsSeparate() {
+        assertEquals("设备启动广播",
+            BackgroundRecoveryTrigger.BOOT_COMPLETED.displayLabel)
+        assertEquals("应用升级广播",
+            BackgroundRecoveryTrigger.PACKAGE_REPLACED.displayLabel)
+        assertEquals("Android START_STICKY 恢复",
+            BackgroundRecoveryTrigger.SYSTEM_STICKY_RESTART.displayLabel)
+    }
+
     @Test fun oldSchedulerCompletionCannotMarkReplacementHealthy() {
         BackgroundMonitorHealth.markSchedulerStopped()
         BackgroundMonitorHealth.resetRecoveryAttempts()
