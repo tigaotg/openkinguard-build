@@ -73,14 +73,14 @@ class EnrollmentTests(unittest.TestCase):
             if index == 0:
                 first_request, first_fingerprint = request_id, fingerprint
             last_request, last_fingerprint = request_id, fingerprint
-        # Any subsequent state access prunes old transient approvals. Durable
-        # UCI authorization remains the authoritative allowlist.
-        self.assertFalse(self.store.is_approved(first_fingerprint))
-        self.assertTrue(self.store.is_approved(last_fingerprint))
+        # The hard cap must hold immediately after the last mutation, not
+        # only after a later read happens to prune the cache.
         state = json.loads((pathlib.Path(self.tmp.name) / "state.json").read_text())
         approved = [item for item in state["pending"].values()
                     if item["status"] == "approved"]
         self.assertLessEqual(len(approved), MAX_APPROVED)
+        self.assertFalse(self.store.is_approved(first_fingerprint))
+        self.assertTrue(self.store.is_approved(last_fingerprint))
         self.assertEqual(self.store.status(first_request, first_fingerprint), "expired")
         self.assertEqual(len(persisted), MAX_APPROVED + 2)
 
