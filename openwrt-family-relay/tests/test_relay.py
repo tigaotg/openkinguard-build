@@ -19,7 +19,7 @@ from relay import AUTH_CONTEXT, Relay, enc, dec
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.relay = Relay({"a" * 64})
+        self.relay = Relay({"a" * 64}, max_clients=64)
         self.server = await serve(self.relay.handler, "127.0.0.1", 0,
                                   max_size=24_000, compression=None)
         self.port = self.server.sockets[0].getsockname()[1]
@@ -86,6 +86,51 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await b.send(json.dumps({"t": "pair_reply", "id": "pair1", "ok": True}))
         self.assertEqual(json.loads(await a.recv()), {"t": "pair_ack", "id": "pair1"})
         self.assertEqual(self.relay.waiting, {})
+
+    async def test_recipient_pending_limit_bounds_many_senders(self):
+        recipient, recipient_id, _ = await self.device()
+        senders = [await self.device() for _ in range(17)]
+        frame = enc(b"R" * 160)
+        for index, (sender, _sender_id, _) in enumerate(senders[:16]):
+            request_id = f"recipient-cap-{index}"
+            await sender.send(json.dumps({"t": "req", "id": request_id,
+                "to": recipient_id, "data": frame}))
+            delivered = json.loads(await recipient.recv())
+            self.assertEqual(delivered["id"], request_id)
+        self.assertEqual(sum(p.recipient == recipient_id
+                             for p in self.relay.waiting.values()), 16)
+        overflow, _, _ = senders[16]
+        await overflow.send(json.dumps({"t": "req", "id": "recipient-cap-overflow",
+            "to": recipient_id, "data": frame}))
+        self.assertEqual(json.loads(await overflow.recv()), {
+            "t": "error", "id": "recipient-cap-overflow", "code": "busy"})
+        self.assertEqual(sum(p.recipient == recipient_id
+                             for p in self.relay.waiting.values()), 16)
+
+    async def test_offline_queue_drains_when_recipient_slots_free(self):
+        sender, sender_id, _ = await self.device()
+        future_key = ec.generate_private_key(ec.SECP256R1())
+        der = future_key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        recipient_id = hashlib.sha256(der).hexdigest()
+        self.relay.allowed = frozenset(set(self.relay.allowed) | {recipient_id})
+        frame = enc(b"Q" * 160)
+        for index in range(20):
+            await sender.send(json.dumps({"t": "req", "id": f"queued-cap-{index}",
+                "to": recipient_id, "data": frame, "queue": True}))
+            self.assertEqual(json.loads(await sender.recv())["t"], "queued")
+        recipient, _, _ = await self.device(future_key)
+        first_batch = [json.loads(await recipient.recv()) for _ in range(16)]
+        self.assertEqual(len(first_batch), 16)
+        self.assertEqual(sum(p.recipient == recipient_id
+                             for p in self.relay.waiting.values()), 16)
+        await recipient.send(json.dumps({"t": "reply", "id": first_batch[0]["id"],
+                                          "data": frame}))
+        next_item = json.loads(await recipient.recv())
+        self.assertEqual(next_item["from"], sender_id)
+        self.assertTrue(next_item["id"].startswith("queued-"))
+        self.assertEqual(sum(p.recipient == recipient_id
+                             for p in self.relay.waiting.values()), 16)
 
     async def test_offline_pairing_never_queues_even_with_queue_flag(self):
         a, _, _ = await self.device()
