@@ -54,9 +54,10 @@ class S1LanService : Service() {
             val initializingFirstTick = health.serviceState == BackgroundServiceState.RUNNING &&
                 health.schedulerState == BackgroundSchedulerState.DELAYED &&
                 now - health.serviceStateElapsed in 0L..STARTING_WINDOW_MS
+            val activeTick = health.taskRunning && !health.taskTimedOut
             val starting = !healthy && (
                 (pendingState && now - health.serviceStateElapsed in 0L..STARTING_WINDOW_MS) ||
-                    initializingFirstTick
+                    initializingFirstTick || activeTick
                 )
             val failure = startupFailure ?: health.lastErrorDetail ?: when {
                 health.serviceState == BackgroundServiceState.BLOCKED_BY_SYSTEM ->
