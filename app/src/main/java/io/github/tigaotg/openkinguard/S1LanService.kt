@@ -243,7 +243,6 @@ class S1LanService : Service() {
         registerNetworkMonitor()
 
         var stage = BackgroundStartupStage.MANAGER_INITIALIZATION
-        var attached = false
         try {
             BackgroundMonitorHealth.markStartupStage(stage)
             val manager = S1Runtime.manager(applicationContext)
@@ -251,7 +250,6 @@ class S1LanService : Service() {
             stage = BackgroundStartupStage.TCP_LISTENER_BIND
             BackgroundMonitorHealth.markStartupStage(stage)
             S1Runtime.attachService(applicationContext)
-            attached = true
             var tcpState = manager.tcpListenerHealth()
             var waitCount = 0
             while (tcpState == BackgroundTcpListenerState.BINDING && waitCount < 10) {
@@ -291,7 +289,9 @@ class S1LanService : Service() {
             scheduler?.shutdownNow()
             scheduler = null
             BackgroundMonitorHealth.markSchedulerStopped()
-            if (attached) S1Runtime.detachService()
+            // attachService() can fail after manager.start() has partially opened resources.
+            // detachService() is idempotent and respects every other S1Runtime owner.
+            S1Runtime.detachService()
             unregisterNetworkMonitor()
             stopSelf()
             return START_NOT_STICKY
