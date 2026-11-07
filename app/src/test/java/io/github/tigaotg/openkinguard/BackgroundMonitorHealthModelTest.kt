@@ -101,4 +101,38 @@ class BackgroundMonitorHealthModelTest {
             BackgroundConsent.CONSENT_INVALID, false, 0, 0L, 10_000L
         ).allowed)
     }
+
+    @Test fun oldSchedulerCompletionCannotMarkReplacementHealthy() {
+        BackgroundMonitorHealth.markSchedulerStopped()
+        BackgroundMonitorHealth.resetRecoveryAttempts()
+        BackgroundMonitorHealth.markServiceStarting(1L)
+        BackgroundMonitorHealth.markServiceRunning(2L)
+        BackgroundMonitorHealth.markSchedulerStarted(3L)
+
+        val oldGeneration = BackgroundMonitorHealth.beginTick(4L)
+        assertTrue(oldGeneration != null)
+        assertTrue(BackgroundMonitorHealth.beginRecoveryAttempt(
+            BackgroundConsent.ENABLED, healthy = false, nowElapsed = 5L
+        ).allowed)
+        BackgroundMonitorHealth.markServiceRunning(6L)
+        assertEquals(1, BackgroundMonitorHealth.snapshot(6L).recoveryAttemptCount)
+
+        BackgroundMonitorHealth.markSchedulerStopped()
+        assertTrue(BackgroundMonitorHealth.snapshot(7L).taskRunning)
+        BackgroundMonitorHealth.markSchedulerStarted(8L)
+        assertTrue(BackgroundMonitorHealth.snapshot(8L).taskRunning)
+
+        BackgroundMonitorHealth.finishTick(oldGeneration!!, 9L)
+        val afterOldTask = BackgroundMonitorHealth.snapshot(9L)
+        assertFalse(afterOldTask.taskRunning)
+        assertEquals(BackgroundSchedulerState.DELAYED, afterOldTask.schedulerState)
+        assertEquals(1, afterOldTask.recoveryAttemptCount)
+
+        val newGeneration = BackgroundMonitorHealth.beginTick(10L)
+        assertTrue(newGeneration != null)
+        BackgroundMonitorHealth.finishTick(newGeneration!!, 11L)
+        val recovered = BackgroundMonitorHealth.snapshot(11L)
+        assertEquals(BackgroundSchedulerState.HEALTHY, recovered.schedulerState)
+        assertEquals(0, recovered.recoveryAttemptCount)
+    }
 }
