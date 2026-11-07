@@ -84,7 +84,11 @@ class BackgroundMonitorHealthModelTest {
             BackgroundConsent.ENABLED, false, 1, 10_000L, 29_999L
         )
         assertFalse(waiting.allowed)
-        assertEquals(1_000L, waiting.retryAfterMs)
+        assertEquals(
+            "The second recovery attempt must wait for the remaining 1 second",
+            1_000L,
+            waiting.retryAfterMs
+        )
 
         val second = BackgroundRecoveryPolicy.evaluate(
             BackgroundConsent.ENABLED, false, 1, 10_000L, 30_000L
