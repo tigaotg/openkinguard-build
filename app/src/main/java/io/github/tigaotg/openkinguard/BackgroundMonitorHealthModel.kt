@@ -1,0 +1,334 @@
+package io.github.tigaotg.openkinguard
+
+/** Local process/service health only. None of these states means a family peer is reachable. */
+internal enum class BackgroundServiceState {
+    STOPPED, START_REQUESTED, STARTING, RUNNING, RESTART_REQUESTED,
+    START_FAILED, STOPPED_BY_USER, BLOCKED_BY_SYSTEM
+}
+
+internal enum class BackgroundStartupStage {
+    NONE, PERMISSION_CHECK, NOTIFICATION_CREATE, FOREGROUND_START,
+    MANAGER_INITIALIZATION, TCP_LISTENER_BIND, SCHEDULER_START
+}
+
+internal enum class BackgroundSchedulerState {
+    NOT_STARTED, HEALTHY, DELAYED, STALLED, TASK_FAILED
+}
+
+internal enum class BackgroundTcpListenerState {
+    NOT_STARTED, BINDING, LISTENING, FAILED, CLOSED_UNEXPECTEDLY
+}
+
+internal enum class BackgroundNetworkState {
+    NO_NETWORK, NETWORK_AVAILABLE, NETWORK_CHANGED, UNKNOWN
+}
+
+internal data class BackgroundHealthSnapshot(
+    val serviceState: BackgroundServiceState = BackgroundServiceState.STOPPED,
+    val serviceStateElapsed: Long = 0L,
+    val startupStage: BackgroundStartupStage = BackgroundStartupStage.NONE,
+    val schedulerState: BackgroundSchedulerState = BackgroundSchedulerState.NOT_STARTED,
+    val schedulerStartedElapsed: Long = 0L,
+    val schedulerClosed: Boolean = true,
+    val lastTickElapsed: Long = 0L,
+    val lastTickStartedElapsed: Long = 0L,
+    val lastTickEndedElapsed: Long = 0L,
+    val lastSuccessfulTaskElapsed: Long = 0L,
+    val taskRunning: Boolean = false,
+    val taskTimedOut: Boolean = false,
+    val lastTaskErrorCode: String? = null,
+    val lastTaskErrorElapsed: Long = 0L,
+    val tcpListenerState: BackgroundTcpListenerState =
+        BackgroundTcpListenerState.NOT_STARTED,
+    val networkState: BackgroundNetworkState = BackgroundNetworkState.UNKNOWN,
+    val lastErrorCode: String? = null,
+    val lastErrorDetail: String? = null,
+    val lastErrorElapsed: Long = 0L,
+    val recoveryAttemptCount: Int = 0,
+    val lastRecoveryElapsed: Long = 0L
+)
+
+internal data class BackgroundRecoveryDecision(
+    val allowed: Boolean,
+    val retryAfterMs: Long = 0L,
+    val exhausted: Boolean = false
+)
+
+/** Three attempts per process: immediate, then 20s and 60s backoff. */
+internal object BackgroundRecoveryPolicy {
+    const val MAX_AUTOMATIC_ATTEMPTS = 3
+    const val MIN_RETRY_INTERVAL_MS = 20_000L
+    const val MAX_RETRY_INTERVAL_MS = 60_000L
+
+    fun evaluate(
+        consent: BackgroundConsent,
+        healthy: Boolean,
+        attemptCount: Int,
+        lastAttemptElapsed: Long,
+        nowElapsed: Long
+    ): BackgroundRecoveryDecision {
+        if (consent != BackgroundConsent.ENABLED || healthy)
+            return BackgroundRecoveryDecision(allowed = false)
+        if (attemptCount >= MAX_AUTOMATIC_ATTEMPTS)
+            return BackgroundRecoveryDecision(allowed = false, exhausted = true)
+        val requiredDelay = when (attemptCount) {
+            0 -> 0L
+            1 -> MIN_RETRY_INTERVAL_MS
+            else -> MAX_RETRY_INTERVAL_MS
+        }
+        val elapsed = (nowElapsed - lastAttemptElapsed).coerceAtLeast(0L)
+        return if (elapsed < requiredDelay) {
+            BackgroundRecoveryDecision(allowed = false,
+                retryAfterMs = requiredDelay - elapsed)
+        } else {
+            BackgroundRecoveryDecision(allowed = true)
+        }
+    }
+}
+
+internal object BackgroundMonitorHealthPolicy {
+    const val TICK_DELAYED_AFTER_MS = 90_000L
+    const val TICK_STALLED_AFTER_MS = 150_000L
+    const val TASK_TIMEOUT_AFTER_MS = 120_000L
+
+    fun schedulerState(state: BackgroundHealthSnapshot, nowElapsed: Long):
+        BackgroundSchedulerState {
+        if (state.schedulerClosed || state.schedulerStartedElapsed <= 0L)
+            return BackgroundSchedulerState.NOT_STARTED
+        if (state.lastTaskErrorCode != null &&
+            state.lastTaskErrorElapsed >= state.lastSuccessfulTaskElapsed)
+            return BackgroundSchedulerState.TASK_FAILED
+        if (state.taskRunning && state.lastTickStartedElapsed > 0L &&
+            nowElapsed - state.lastTickStartedElapsed >= TASK_TIMEOUT_AFTER_MS)
+            return BackgroundSchedulerState.STALLED
+        if (state.lastTickElapsed <= 0L) {
+            return if (nowElapsed - state.schedulerStartedElapsed >= TICK_STALLED_AFTER_MS)
+                BackgroundSchedulerState.STALLED else BackgroundSchedulerState.DELAYED
+        }
+        val age = (nowElapsed - state.lastTickElapsed).coerceAtLeast(0L)
+        return when {
+            age <= TICK_DELAYED_AFTER_MS -> BackgroundSchedulerState.HEALTHY
+            age <= TICK_STALLED_AFTER_MS -> BackgroundSchedulerState.DELAYED
+            else -> BackgroundSchedulerState.STALLED
+        }
+    }
+
+    /** Network availability is deliberately excluded from local service health. */
+    fun localServiceHealthy(state: BackgroundHealthSnapshot): Boolean =
+        state.serviceState == BackgroundServiceState.RUNNING &&
+            state.schedulerState == BackgroundSchedulerState.HEALTHY &&
+            state.tcpListenerState == BackgroundTcpListenerState.LISTENING
+}
+
+internal object BackgroundMonitorHealth {
+    @Volatile private var current = BackgroundHealthSnapshot()
+
+    fun snapshot(nowElapsed: Long): BackgroundHealthSnapshot {
+        val raw = current
+        val timedOut = raw.taskRunning && raw.lastTickStartedElapsed > 0L &&
+            nowElapsed - raw.lastTickStartedElapsed >=
+                BackgroundMonitorHealthPolicy.TASK_TIMEOUT_AFTER_MS
+        return raw.copy(
+            schedulerState = BackgroundMonitorHealthPolicy.schedulerState(raw, nowElapsed),
+            taskTimedOut = timedOut
+        )
+    }
+
+    @Synchronized fun markStartRequested(automatic: Boolean, nowElapsed: Long) {
+        current = current.copy(
+            serviceState = if (automatic) BackgroundServiceState.RESTART_REQUESTED
+                else BackgroundServiceState.START_REQUESTED,
+            serviceStateElapsed = nowElapsed,
+            startupStage = BackgroundStartupStage.NONE,
+            lastErrorCode = null,
+            lastErrorDetail = null,
+            lastErrorElapsed = 0L
+        )
+    }
+
+    @Synchronized fun markServiceStarting(nowElapsed: Long) {
+        current = current.copy(
+            serviceState = BackgroundServiceState.STARTING,
+            serviceStateElapsed = nowElapsed,
+            startupStage = BackgroundStartupStage.NOTIFICATION_CREATE,
+            lastErrorCode = null,
+            lastErrorDetail = null,
+            lastErrorElapsed = 0L
+        )
+    }
+
+    @Synchronized fun markServiceRunning(nowElapsed: Long) {
+        current = current.copy(
+            serviceState = BackgroundServiceState.RUNNING,
+            serviceStateElapsed = nowElapsed,
+            startupStage = BackgroundStartupStage.NONE,
+            lastErrorCode = null,
+            lastErrorDetail = null,
+            lastErrorElapsed = 0L,
+            recoveryAttemptCount = 0,
+            lastRecoveryElapsed = 0L
+        )
+    }
+
+    @Synchronized fun markStartupFailure(
+        stage: BackgroundStartupStage,
+        code: String,
+        detail: String,
+        blockedBySystem: Boolean,
+        nowElapsed: Long
+    ) {
+        current = current.copy(
+            serviceState = if (blockedBySystem) BackgroundServiceState.BLOCKED_BY_SYSTEM
+                else BackgroundServiceState.START_FAILED,
+            serviceStateElapsed = nowElapsed,
+            startupStage = stage,
+            lastErrorCode = code,
+            lastErrorDetail = detail,
+            lastErrorElapsed = nowElapsed
+        )
+    }
+
+    @Synchronized fun markServiceStopped(userInitiated: Boolean, nowElapsed: Long) {
+        current = current.copy(
+            serviceState = if (userInitiated) BackgroundServiceState.STOPPED_BY_USER
+                else BackgroundServiceState.STOPPED,
+            serviceStateElapsed = nowElapsed,
+            startupStage = BackgroundStartupStage.NONE
+        )
+    }
+
+    @Synchronized fun markSchedulerStarted(nowElapsed: Long) {
+        current = current.copy(
+            schedulerState = BackgroundSchedulerState.DELAYED,
+            schedulerStartedElapsed = nowElapsed,
+            schedulerClosed = false,
+            lastTickElapsed = 0L,
+            lastTickStartedElapsed = 0L,
+            lastTickEndedElapsed = 0L,
+            lastSuccessfulTaskElapsed = 0L,
+            taskRunning = false,
+            taskTimedOut = false,
+            lastTaskErrorCode = null,
+            lastTaskErrorElapsed = 0L
+        )
+    }
+
+    @Synchronized fun beginTick(nowElapsed: Long): Boolean {
+        if (current.schedulerClosed || current.taskRunning) return false
+        current = current.copy(
+            taskRunning = true,
+            lastTickStartedElapsed = nowElapsed,
+            taskTimedOut = false
+        )
+        return true
+    }
+
+    @Synchronized fun finishTick(nowElapsed: Long) {
+        if (current.schedulerClosed) return
+        current = current.copy(
+            schedulerState = BackgroundSchedulerState.HEALTHY,
+            lastTickElapsed = nowElapsed,
+            lastTickEndedElapsed = nowElapsed,
+            lastSuccessfulTaskElapsed = nowElapsed,
+            taskRunning = false,
+            taskTimedOut = false,
+            lastTaskErrorCode = null,
+            lastTaskErrorElapsed = 0L
+        )
+    }
+
+    @Synchronized fun failTick(code: String, detail: String, nowElapsed: Long) {
+        if (current.schedulerClosed) return
+        current = current.copy(
+            schedulerState = BackgroundSchedulerState.TASK_FAILED,
+            lastTickElapsed = nowElapsed,
+            lastTickEndedElapsed = nowElapsed,
+            taskRunning = false,
+            taskTimedOut = false,
+            lastTaskErrorCode = code,
+            lastTaskErrorElapsed = nowElapsed,
+            lastErrorCode = code,
+            lastErrorDetail = detail,
+            lastErrorElapsed = nowElapsed
+        )
+    }
+
+    @Synchronized fun markSchedulerStopped() {
+        current = current.copy(
+            schedulerState = BackgroundSchedulerState.NOT_STARTED,
+            schedulerClosed = true,
+            taskRunning = false,
+            taskTimedOut = false
+        )
+    }
+
+    @Synchronized fun setTcpListenerState(value: BackgroundTcpListenerState) {
+        current = current.copy(tcpListenerState = value)
+    }
+
+    @Synchronized fun setNetworkState(value: BackgroundNetworkState) {
+        current = current.copy(networkState = value)
+    }
+
+    @Synchronized fun beginRecoveryAttempt(
+        consent: BackgroundConsent,
+        healthy: Boolean,
+        nowElapsed: Long
+    ): BackgroundRecoveryDecision {
+        val decision = BackgroundRecoveryPolicy.evaluate(
+            consent, healthy, current.recoveryAttemptCount,
+            current.lastRecoveryElapsed, nowElapsed
+        )
+        if (decision.allowed) {
+            current = current.copy(
+                recoveryAttemptCount = current.recoveryAttemptCount + 1,
+                lastRecoveryElapsed = nowElapsed,
+                serviceState = BackgroundServiceState.RESTART_REQUESTED,
+                serviceStateElapsed = nowElapsed
+            )
+        }
+        return decision
+    }
+
+    @Synchronized fun resetRecoveryAttempts() {
+        current = current.copy(recoveryAttemptCount = 0, lastRecoveryElapsed = 0L)
+    }
+}
+
+internal val BackgroundServiceState.displayLabel: String
+    get() = when (this) {
+        BackgroundServiceState.STOPPED -> "已停止"
+        BackgroundServiceState.START_REQUESTED -> "已请求启动"
+        BackgroundServiceState.STARTING -> "正在初始化"
+        BackgroundServiceState.RUNNING -> "正在运行"
+        BackgroundServiceState.RESTART_REQUESTED -> "已请求恢复"
+        BackgroundServiceState.START_FAILED -> "启动失败"
+        BackgroundServiceState.STOPPED_BY_USER -> "用户已关闭"
+        BackgroundServiceState.BLOCKED_BY_SYSTEM -> "系统阻止启动"
+    }
+
+internal val BackgroundSchedulerState.displayLabel: String
+    get() = when (this) {
+        BackgroundSchedulerState.NOT_STARTED -> "未启动"
+        BackgroundSchedulerState.HEALTHY -> "正常执行"
+        BackgroundSchedulerState.DELAYED -> "执行延迟"
+        BackgroundSchedulerState.STALLED -> "调度停滞或超时"
+        BackgroundSchedulerState.TASK_FAILED -> "关键任务失败"
+    }
+
+internal val BackgroundTcpListenerState.displayLabel: String
+    get() = when (this) {
+        BackgroundTcpListenerState.NOT_STARTED -> "未启动"
+        BackgroundTcpListenerState.BINDING -> "正在绑定"
+        BackgroundTcpListenerState.LISTENING -> "本机监听有效"
+        BackgroundTcpListenerState.FAILED -> "绑定失败"
+        BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY -> "监听意外关闭"
+    }
+
+internal val BackgroundNetworkState.displayLabel: String
+    get() = when (this) {
+        BackgroundNetworkState.NO_NETWORK -> "系统未报告可用网络"
+        BackgroundNetworkState.NETWORK_AVAILABLE -> "系统报告网络可用"
+        BackgroundNetworkState.NETWORK_CHANGED -> "网络正在变化"
+        BackgroundNetworkState.UNKNOWN -> "网络状态未知"
+    }
