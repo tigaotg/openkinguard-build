@@ -20,18 +20,18 @@ internal object BackgroundConsentStore {
     private const val FILE = "okg.background.monitor.v1"
     private const val KEY = "user_choice"
 
+    internal fun parse(raw: String?): BackgroundConsent = when (raw) {
+        null -> BackgroundConsent.NOT_DECIDED
+        "enabled" -> BackgroundConsent.ENABLED
+        "disabled" -> BackgroundConsent.USER_DISABLED
+        else -> BackgroundConsent.CONSENT_INVALID
+    }
+
     fun get(context: Context): BackgroundConsent = runCatching {
         context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
             .getString(KEY, null)
     }.fold(
-        onSuccess = { raw ->
-            when (raw) {
-                null -> BackgroundConsent.NOT_DECIDED
-                "enabled" -> BackgroundConsent.ENABLED
-                "disabled" -> BackgroundConsent.USER_DISABLED
-                else -> BackgroundConsent.CONSENT_INVALID
-            }
-        },
+        onSuccess = ::parse,
         // A wrong SharedPreferences value type or unreadable store must fail closed.
         onFailure = { BackgroundConsent.CONSENT_INVALID }
     )
