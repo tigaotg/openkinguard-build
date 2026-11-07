@@ -66,6 +66,15 @@ class EnrollmentStore:
                 del pending[key]
                 pruned = True
             result, modified = callback(data, now)
+            # Also prune after mutations: a newly approved request must not
+            # temporarily push the persistent tmpfs cache above its hard cap.
+            approved = sorted(
+                ((key, value) for key, value in pending.items()
+                 if value.get("status") == "approved"),
+                key=lambda item: item[1].get("created", 0))
+            for key, _ in approved[:-MAX_APPROVED]:
+                del pending[key]
+                pruned = True
             modified = modified or pruned
             if modified:
                 fd, tmp = tempfile.mkstemp(prefix="state-", dir=self.directory)
