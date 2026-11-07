@@ -77,6 +77,9 @@ internal object S1Runtime {
         if (shouldStopTransport()) managerInstance?.stop()
     }
 
+    @Synchronized fun tcpListenerState(): BackgroundTcpListenerState =
+        managerInstance?.tcpListenerHealth() ?: BackgroundTcpListenerState.NOT_STARTED
+
     fun isBackgroundListening(): Boolean = backgroundListening
     fun isUiVisible(): Boolean = visible || controllerVisible
 }
