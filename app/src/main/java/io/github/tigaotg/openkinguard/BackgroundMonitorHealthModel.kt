@@ -136,6 +136,9 @@ internal object BackgroundMonitorHealthPolicy {
     fun localServiceHealthy(state: BackgroundHealthSnapshot): Boolean =
         state.serviceState == BackgroundServiceState.RUNNING &&
             state.schedulerState == BackgroundSchedulerState.HEALTHY &&
+            !state.taskRunning &&
+            !state.taskTimedOut &&
+            state.lastTaskErrorCode == null &&
             state.tcpListenerState == BackgroundTcpListenerState.LISTENING
 }
 
