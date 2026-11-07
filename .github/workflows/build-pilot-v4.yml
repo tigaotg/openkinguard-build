@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - codex/family-relay-pairing-0.10.2
-      - codex/app-relay-audit-0.10.4-relay-0.3.7
     paths:
       - '.github/workflows/build-pilot-v4.yml'
       - 'app/**'
