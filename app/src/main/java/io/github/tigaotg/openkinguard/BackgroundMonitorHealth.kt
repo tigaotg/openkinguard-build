@@ -2,6 +2,7 @@ package io.github.tigaotg.openkinguard
 
 import android.Manifest
 import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.app.AlarmManager
 import android.app.NotificationManager
 import android.content.Context
@@ -79,7 +80,8 @@ internal data class BackgroundReadiness(
     val medicineAlarmRelevant: Boolean,
     val exactAlarmAllowed: Boolean,
     val serviceDetail: String,
-    val health: BackgroundHealthSnapshot = BackgroundHealthSnapshot()
+    val health: BackgroundHealthSnapshot = BackgroundHealthSnapshot(),
+    val previousProcessExit: BackgroundProcessExitSnapshot = BackgroundProcessExitSnapshot()
 ) {
     val statusLabel: String get() = when (phase) {
         BackgroundPhase.RUNNING -> "本机后台服务正常（不代表家属在线）"
@@ -118,6 +120,50 @@ internal data class BackgroundReadiness(
 }
 
 internal object BackgroundStartupCheck {
+    private fun inspectPreviousProcessExit(
+        app: Context,
+        activityManager: ActivityManager
+    ): BackgroundProcessExitSnapshot {
+        if (Build.VERSION.SDK_INT < 30) return BackgroundProcessExitSnapshot()
+        return runCatching {
+            activityManager.getHistoricalProcessExitReasons(app.packageName, 0, 1)
+                .firstOrNull()
+        }.fold(
+            onSuccess = { info ->
+                if (info == null) return@fold BackgroundProcessExitSnapshot()
+                val kind = when (info.reason) {
+                    ApplicationExitInfo.REASON_LOW_MEMORY,
+                    ApplicationExitInfo.REASON_MEMORY_LIMITER -> 
+                        BackgroundProcessExitKind.SYSTEM_LOW_MEMORY
+                    ApplicationExitInfo.REASON_CRASH,
+                    ApplicationExitInfo.REASON_CRASH_NATIVE,
+                    ApplicationExitInfo.REASON_INITIALIZATION_FAILURE ->
+                        BackgroundProcessExitKind.CRASH
+                    ApplicationExitInfo.REASON_ANR -> BackgroundProcessExitKind.ANR
+                    ApplicationExitInfo.REASON_USER_REQUESTED ->
+                        BackgroundProcessExitKind.USER_REQUESTED
+                    ApplicationExitInfo.REASON_USER_STOPPED ->
+                        BackgroundProcessExitKind.USER_STOPPED
+                    else -> if (Build.VERSION.SDK_INT >= 34 &&
+                        info.reason == ApplicationExitInfo.REASON_PACKAGE_UPDATED) {
+                        BackgroundProcessExitKind.PACKAGE_UPDATED
+                    } else BackgroundProcessExitKind.OTHER
+                }
+                BackgroundProcessExitSnapshot(
+                    kind = kind,
+                    timestamp = info.timestamp,
+                    detail = info.description
+                )
+            },
+            onFailure = { error ->
+                BackgroundProcessExitSnapshot(
+                    kind = BackgroundProcessExitKind.CHECK_FAILED,
+                    detail = error.javaClass.simpleName
+                )
+            }
+        )
+    }
+
     /** Standard settings only. OEM autostart controls may need manual navigation. */
     fun openBackgroundSettings(context: Context) {
         val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
@@ -152,6 +198,7 @@ internal object BackgroundStartupCheck {
                     PackageManager.PERMISSION_GRANTED)
         val manager = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val restricted = manager.isBackgroundRestricted
+        val previousProcessExit = inspectPreviousProcessExit(app, manager)
         val battery = app.getSystemService(Context.POWER_SERVICE) as PowerManager
         val batteryExempt = battery.isIgnoringBatteryOptimizations(app.packageName)
         val locationRelevant = runCatching { S1Runtime.manager(app).snapshot().history
@@ -215,7 +262,8 @@ internal object BackgroundStartupCheck {
                 if (probe.healthy) "本机服务、调度器和 TCP 监听均正常；不代表家属在线"
                 else "本机后台服务尚未达到完整健康条件"
             },
-            health = health
+            health = health,
+            previousProcessExit = previousProcessExit
         )
     }
 }
