@@ -658,6 +658,24 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             assistTransferStatus = RemoteAssistProjectionService.currentTransferStatus()
             GuardWidgetPublisher.publishFromManager(context, manager)
             backgroundListening = S1Runtime.isBackgroundListening()
+            // Refresh the in-memory health snapshot only; this is not a network probe.
+            backgroundReadiness = backgroundReadiness?.let { previous ->
+                val probe = S1LanService.runtimeProbe()
+                previous.copy(
+                    phase = BackgroundMonitorPolicy.phase(
+                        previous.consent,
+                        probe.healthy,
+                        probe.starting,
+                        systemRestricted = probe.health.serviceState ==
+                            BackgroundServiceState.BLOCKED_BY_SYSTEM
+                    ),
+                    serviceDetail = probe.failure.orEmpty().ifBlank {
+                        if (probe.healthy) "本机服务、调度器和 TCP 监听均正常；不代表家属在线"
+                        else "本机后台服务尚未达到完整健康条件"
+                    },
+                    health = probe.health
+                )
+            }
             // Signed events also push updates immediately. Avoid excessive Compose/JSON work
             // on old Android 10 hardware while leaving request feedback responsive.
             delay(if (requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
