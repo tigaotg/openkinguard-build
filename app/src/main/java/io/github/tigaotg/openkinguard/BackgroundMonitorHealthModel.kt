@@ -28,6 +28,17 @@ internal enum class BackgroundRecoveryTrigger {
     SYSTEM_STICKY_RESTART
 }
 
+internal enum class BackgroundProcessExitKind {
+    NOT_AVAILABLE, SYSTEM_LOW_MEMORY, CRASH, ANR, USER_REQUESTED, USER_STOPPED,
+    PACKAGE_UPDATED, OTHER, CHECK_FAILED
+}
+
+internal data class BackgroundProcessExitSnapshot(
+    val kind: BackgroundProcessExitKind = BackgroundProcessExitKind.NOT_AVAILABLE,
+    val timestamp: Long = 0L,
+    val detail: String? = null
+)
+
 internal data class BackgroundHealthSnapshot(
     val serviceState: BackgroundServiceState = BackgroundServiceState.STOPPED,
     val serviceStateElapsed: Long = 0L,
@@ -386,4 +397,18 @@ internal val BackgroundRecoveryTrigger.displayLabel: String
         BackgroundRecoveryTrigger.BOOT_COMPLETED -> "设备启动广播"
         BackgroundRecoveryTrigger.PACKAGE_REPLACED -> "应用升级广播"
         BackgroundRecoveryTrigger.SYSTEM_STICKY_RESTART -> "Android START_STICKY 恢复"
+    }
+
+internal val BackgroundProcessExitSnapshot.displayLabel: String
+    get() = when (kind) {
+        BackgroundProcessExitKind.NOT_AVAILABLE -> "Android 10 或系统未提供退出记录"
+        BackgroundProcessExitKind.SYSTEM_LOW_MEMORY -> "系统因内存压力回收进程"
+        BackgroundProcessExitKind.CRASH -> "进程崩溃或初始化失败"
+        BackgroundProcessExitKind.ANR -> "进程无响应（ANR）"
+        BackgroundProcessExitKind.USER_REQUESTED ->
+            "用户请求结束进程（可能是强行停止或从最近任务移除）"
+        BackgroundProcessExitKind.USER_STOPPED -> "当前 Android 用户停止了应用"
+        BackgroundProcessExitKind.PACKAGE_UPDATED -> "应用升级导致旧进程退出"
+        BackgroundProcessExitKind.OTHER -> "系统以其他原因结束进程"
+        BackgroundProcessExitKind.CHECK_FAILED -> "读取上次进程退出原因失败"
     }
