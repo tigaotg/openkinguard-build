@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openkinguard-family-relay
-PKG_VERSION:=0.3.6
+PKG_VERSION:=0.3.7
 PKG_RELEASE:=1
 PKG_LICENSE:=AGPL-3.0-only
 PKG_MAINTAINER:=OpenKinGuard contributors
