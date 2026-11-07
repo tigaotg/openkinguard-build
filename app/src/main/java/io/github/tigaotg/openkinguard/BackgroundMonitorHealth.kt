@@ -61,6 +61,7 @@ internal data class BackgroundReadiness(
     val backgroundRestricted: Boolean,
     val locationRelevant: Boolean,
     val locationGranted: Boolean,
+    val backgroundLocationGranted: Boolean,
     val bluetoothRelevant: Boolean,
     val bluetoothGranted: Boolean,
     val medicineAlarmRelevant: Boolean,
@@ -77,15 +78,18 @@ internal data class BackgroundReadiness(
     }
 
     val needsAttention: Boolean get() = phase != BackgroundPhase.RUNNING ||
-        !notificationsAllowed || backgroundRestricted ||
-        (locationRelevant && !locationGranted) ||
-        (bluetoothRelevant && !bluetoothGranted)
+        !notificationsAllowed || !batteryExempt || backgroundRestricted ||
+        (locationRelevant && (!locationGranted || !backgroundLocationGranted)) ||
+        (bluetoothRelevant && !bluetoothGranted) ||
+        (medicineAlarmRelevant && !exactAlarmAllowed)
 
     fun advice(): List<String> = buildList {
         if (phase != BackgroundPhase.RUNNING) add("后台监听：$statusLabel")
         if (!notificationsAllowed) add("通知已关闭：可能看不到收到的 SOS、报平安等提醒")
+        if (!batteryExempt) add("电池优化仍开启：系统可能延迟或停止后台监听，请检查是否允许 OpenKinGuard 不受电池优化限制")
         if (backgroundRestricted) add("系统限制后台执行：请查看应用的后台使用设置")
-        if (locationRelevant && !locationGranted) add("位置权限不足：已授权家人的位置请求可能无法完成")
+        if (locationRelevant && !locationGranted) add("前台定位权限不足：已授权家人的位置请求可能无法完成")
+        if (locationRelevant && !backgroundLocationGranted) add("后台定位权限未授予：App 不在前台时可能无法响应家人的位置请求")
         if (bluetoothRelevant && !bluetoothGranted) add("附近设备权限不足：穿戴心率读取可能失败")
         if (medicineAlarmRelevant && !exactAlarmAllowed)
             add("精确闹钟未获允许：服药提醒将使用可能延迟的普通闹钟")
@@ -102,6 +106,20 @@ internal object BackgroundStartupCheck {
                 Uri.parse("package:${context.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
+    }
+
+    fun openAppDetailsSettings(context: Context) {
+        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    fun openExactAlarmSettings(context: Context) {
+        if (Build.VERSION.SDK_INT < 31) return
+        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+            Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }.getOrElse { openAppDetailsSettings(context) }
     }
 
     fun inspect(context: Context, recovering: Boolean = false): BackgroundReadiness {
@@ -121,6 +139,9 @@ internal object BackgroundStartupCheck {
             PackageManager.PERMISSION_GRANTED ||
             app.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
+        val backgroundLocationGranted = Build.VERSION.SDK_INT < 29 ||
+            app.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
         val bluetoothRelevant = app.getSharedPreferences("okg.health.heart_pilot.v1",
             Context.MODE_PRIVATE).getBoolean("enabled", false)
         val bluetoothGranted = if (Build.VERSION.SDK_INT >= 31) {
@@ -139,8 +160,8 @@ internal object BackgroundStartupCheck {
         val phase = BackgroundMonitorPolicy.phase(consent, probe.healthy,
             recovering || probe.starting, restricted)
         return BackgroundReadiness(consent, phase, allowedNotification, batteryExempt,
-            restricted, locationRelevant, locationGranted, bluetoothRelevant,
-            bluetoothGranted, medicineRelevant, exactAlarm,
+            restricted, locationRelevant, locationGranted, backgroundLocationGranted,
+            bluetoothRelevant, bluetoothGranted, medicineRelevant, exactAlarm,
             probe.failure.orEmpty().ifBlank {
                 if (probe.healthy) "服务心跳正常；厂商自启动限制仍需人工检查"
                 else "尚未收到服务的有效运行心跳"

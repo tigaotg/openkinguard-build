@@ -2612,12 +2612,25 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                     if (check.exactAlarmAllowed) "精确闹钟可用" else
                                         "尚未允许精确闹钟，提醒可能延后",
                                     style = MaterialTheme.typography.bodySmall)
-                                if (check.locationRelevant) Text("家人位置共享所需权限：" +
-                                    if (check.locationGranted) "已授予前台定位权限" else "尚未授予",
-                                    style = MaterialTheme.typography.bodySmall)
+                                if (check.locationRelevant) {
+                                    Text("前台定位权限：" + if (check.locationGranted) "已授予" else "尚未授予",
+                                        style = MaterialTheme.typography.bodySmall)
+                                    Text("后台定位权限：" + if (check.backgroundLocationGranted) "已授予" else "尚未授予",
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
                                 if (check.bluetoothRelevant) Text("已开启心率试验所需权限：" +
                                     if (check.bluetoothGranted) "已授予" else "尚未授予",
                                     style = MaterialTheme.typography.bodySmall)
+                                if (check.locationRelevant && !check.backgroundLocationGranted) {
+                                    OutlinedButton(onClick = {
+                                        BackgroundStartupCheck.openAppDetailsSettings(context)
+                                    }) { Text("设置后台定位权限") }
+                                }
+                                if (check.medicineAlarmRelevant && !check.exactAlarmAllowed) {
+                                    OutlinedButton(onClick = {
+                                        BackgroundStartupCheck.openExactAlarmSettings(context)
+                                    }) { Text("设置精确闹钟权限") }
+                                }
                                 Text(check.serviceDetail, style = MaterialTheme.typography.bodySmall)
                                 if (check.phase != BackgroundPhase.RUNNING &&
                                     check.phase != BackgroundPhase.RECOVERING) {

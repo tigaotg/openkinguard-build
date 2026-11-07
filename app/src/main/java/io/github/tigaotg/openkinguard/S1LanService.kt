@@ -167,8 +167,13 @@ class S1LanService : Service() {
                         manager.deliverPending()
                         if (android.os.SystemClock.elapsedRealtime() - startedAt >= 60_000L)
                             manager.checkLiveness()
-                        GuardWidgetPublisher.publishFromManager(applicationContext, manager)
+                        // Core listener health is independent of optional desktop-widget I/O.
                         lastTickElapsed = SystemClock.elapsedRealtime()
+                        runCatching {
+                            GuardWidgetPublisher.publishFromManager(applicationContext, manager)
+                        }.onFailure { widgetError ->
+                            Log.w("OpenKinGuard", "Background widget refresh failed", widgetError)
+                        }
                     } catch (error: Exception) {
                         Log.w("OpenKinGuard", "Background LAN tick failed", error)
                     }
