@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -19,16 +20,21 @@ internal object BackgroundConsentStore {
     private const val FILE = "okg.background.monitor.v1"
     private const val KEY = "user_choice"
 
-    fun get(context: Context): BackgroundConsent {
-        val raw = context.applicationContext
-            .getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null)
-        return when (raw) {
-            null -> BackgroundConsent.NOT_DECIDED
-            "enabled" -> BackgroundConsent.ENABLED
-            "disabled" -> BackgroundConsent.USER_DISABLED
-            else -> BackgroundConsent.CONSENT_INVALID
-        }
-    }
+    fun get(context: Context): BackgroundConsent = runCatching {
+        context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getString(KEY, null)
+    }.fold(
+        onSuccess = { raw ->
+            when (raw) {
+                null -> BackgroundConsent.NOT_DECIDED
+                "enabled" -> BackgroundConsent.ENABLED
+                "disabled" -> BackgroundConsent.USER_DISABLED
+                else -> BackgroundConsent.CONSENT_INVALID
+            }
+        },
+        // A wrong SharedPreferences value type or unreadable store must fail closed.
+        onFailure = { BackgroundConsent.CONSENT_INVALID }
+    )
 
     fun set(context: Context, allowed: Boolean) {
         context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
@@ -170,6 +176,22 @@ internal object BackgroundStartupCheck {
                 MedicalSchedule.slots(it).isNotEmpty() } }.getOrDefault(false)
         val exactAlarm = Build.VERSION.SDK_INT < 31 ||
             (app.getSystemService(Context.ALARM_SERVICE) as AlarmManager).canScheduleExactAlarms()
+
+        // Read current system connectivity even when the foreground service is stopped.
+        // This is only a local network-state observation, not an Internet or peer probe.
+        val observedNetwork = runCatching {
+            val connectivity = app.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager
+            val active = connectivity.activeNetwork
+            when {
+                active == null -> BackgroundNetworkState.NO_NETWORK
+                connectivity.getNetworkCapabilities(active) == null ->
+                    BackgroundNetworkState.UNKNOWN
+                else -> BackgroundNetworkState.NETWORK_AVAILABLE
+            }
+        }.getOrDefault(BackgroundNetworkState.UNKNOWN)
+        BackgroundMonitorHealth.setNetworkState(observedNetwork)
+
         val consent = BackgroundConsentStore.get(app)
         val probe = S1LanService.runtimeProbe()
         val health = probe.health
