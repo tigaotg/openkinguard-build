@@ -224,7 +224,6 @@ internal object BackgroundMonitorHealth {
             schedulerGeneration = current.schedulerGeneration + 1L,
             schedulerClosed = false,
             lastTickElapsed = 0L,
-            lastTickStartedElapsed = 0L,
             lastTickEndedElapsed = 0L,
             lastSuccessfulTaskElapsed = 0L,
             // A previous scheduler task may still be unwinding after shutdownNow().
