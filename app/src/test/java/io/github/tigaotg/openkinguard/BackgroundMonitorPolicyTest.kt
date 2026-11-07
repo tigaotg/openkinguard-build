@@ -44,4 +44,14 @@ class BackgroundMonitorPolicyTest {
         assertEquals(BackgroundPhase.CONSENT_INVALID, BackgroundMonitorPolicy.phase(
             BackgroundConsent.CONSENT_INVALID, false, false, false))
     }
+
+    @Test fun storedConsentIsParsedWithoutGuessingUnknownValues() {
+        assertEquals(BackgroundConsent.NOT_DECIDED, BackgroundConsentStore.parse(null))
+        assertEquals(BackgroundConsent.ENABLED, BackgroundConsentStore.parse("enabled"))
+        assertEquals(BackgroundConsent.USER_DISABLED, BackgroundConsentStore.parse("disabled"))
+        assertEquals(BackgroundConsent.CONSENT_INVALID,
+            BackgroundConsentStore.parse("unexpected"))
+        assertEquals(BackgroundConsent.CONSENT_INVALID,
+            BackgroundConsentStore.parse(""))
+    }
 }
