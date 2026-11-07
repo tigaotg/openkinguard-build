@@ -132,8 +132,7 @@ internal object BackgroundStartupCheck {
             onSuccess = { info ->
                 if (info == null) return@fold BackgroundProcessExitSnapshot()
                 val kind = when (info.reason) {
-                    ApplicationExitInfo.REASON_LOW_MEMORY,
-                    ApplicationExitInfo.REASON_MEMORY_LIMITER -> 
+                    ApplicationExitInfo.REASON_LOW_MEMORY ->
                         BackgroundProcessExitKind.SYSTEM_LOW_MEMORY
                     ApplicationExitInfo.REASON_CRASH,
                     ApplicationExitInfo.REASON_CRASH_NATIVE,
