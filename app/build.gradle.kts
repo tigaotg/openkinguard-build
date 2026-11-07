@@ -92,8 +92,8 @@ android {
         create("familyRelayTest") {
             // Disposable trial app, installed next to BOTH pilotV4 and S1 diagnostic.
             initWith(getByName("debug"))
-            applicationIdSuffix = ".familyrelaytest"
-            versionNameSuffix = "-oneoff-test"
+            applicationIdSuffix = ".familyrelaytest104"
+            versionNameSuffix = "-0.10.4-oneoff-test"
             signingConfig = signingConfigs.getByName("familyRelayTest")
             matchingFallbacks += listOf("debug")
         }
