@@ -72,6 +72,12 @@ internal class S2RelayPool(
             if (client.supportsFamilyPairing) index to { client.familyPeers() } else null
         })
 
+    fun resolveFamilyPeer(fingerprint: String): FamilyRelayPeer {
+        require(Regex("[0-9a-f]{64}").matches(fingerprint)) { "家庭设备指纹格式无效" }
+        return familyPeers().firstOrNull { it.fingerprint == fingerprint }
+            ?: throw IOException("家庭中继当前未发现目标设备；请让对方保持联网后重新查找")
+    }
+
     fun sendPairing(peer: FamilyRelayPeer, signedFrame: String) {
         require(peer.slot in endpoints.indices && slots[peer.slot].supportsFamilyPairing) {
             "之前发现的家庭中继已断开，请重新查找设备"

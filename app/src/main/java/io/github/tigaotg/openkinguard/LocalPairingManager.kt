@@ -41,7 +41,29 @@ data class PairingSnapshot(
     val peers: List<SavedPeer> = emptyList(),
     /** Short-lived cancellation tombstones prevent delayed LAN packets reviving cancelled invites. */
     val cancelledSessions: Map<String, Long> = emptyMap(),
+    /** Family-relay route is persisted so an in-flight signed pairing can resume after process death. */
+    val familyRelayPeer: FamilyRelayPeer? = null,
 )
+
+internal object FamilyRelayPeerCodec {
+    private val fingerprintPattern = Regex("[0-9a-f]{64}")
+
+    fun validate(peer: FamilyRelayPeer) {
+        require(fingerprintPattern.matches(peer.fingerprint)) { "家庭设备指纹格式无效" }
+        require(peer.slot in 0..2) { "家庭中继节点编号无效" }
+    }
+
+    fun encode(peer: FamilyRelayPeer): JSONObject {
+        validate(peer)
+        return JSONObject().put("fingerprint", peer.fingerprint).put("slot", peer.slot)
+    }
+
+    fun decode(value: JSONObject): FamilyRelayPeer {
+        val peer = FamilyRelayPeer(value.getString("fingerprint"), value.getInt("slot"))
+        validate(peer)
+        return peer
+    }
+}
 
 /** Atomically written, private, non-backed-up public trust records. Corruption blocks pairing. */
 private class PairingFileStore(context: Context) {
@@ -90,7 +112,8 @@ private class PairingFileStore(context: Context) {
         val cancelled = root.optJSONObject("cancelledSessions")?.let { entries ->
             entries.keys().asSequence().associateWith { entries.getLong(it) }
         }.orEmpty()
-        PairingSnapshot(session, peers, cancelled)
+        val familyRelayPeer = root.optJSONObject("familyRelayPeer")?.let(FamilyRelayPeerCodec::decode)
+        PairingSnapshot(session, peers, cancelled, familyRelayPeer)
     } catch (_: FileNotFoundException) { PairingSnapshot() }
 
     fun save(data: PairingSnapshot) = synchronized(LOCK) {
@@ -112,6 +135,7 @@ private class PairingFileStore(context: Context) {
         }
         root.put("peers", array)
         root.put("cancelledSessions", JSONObject(data.cancelledSessions))
+        data.familyRelayPeer?.let { root.put("familyRelayPeer", FamilyRelayPeerCodec.encode(it)) }
         var stream: java.io.FileOutputStream? = null
         try {
             stream = file.startWrite()
@@ -134,6 +158,12 @@ class LocalPairingManager(context: Context) {
     private val keys = AndroidDeviceKeyStore()
 
     fun snapshot(): PairingSnapshot = storage.load()
+
+    @Synchronized
+    fun setFamilyRelayPeer(peer: FamilyRelayPeer?) {
+        peer?.let(FamilyRelayPeerCodec::validate)
+        store(storage.load().copy(familyRelayPeer = peer))
+    }
 
     /** Legacy duplicates remain visible until the owner explicitly chooses which one to retain. */
     fun legacyDuplicateGroups(): List<List<SavedPeer>> {
@@ -194,19 +224,22 @@ class LocalPairingManager(context: Context) {
     }
 
     @Synchronized
-    fun createInvitation(): PairingSnapshot {
+    fun createInvitation(familyRelayPeer: FamilyRelayPeer? = null): PairingSnapshot {
         val current = storage.load()
         require(current.session == null) { "Finish or cancel the existing pairing first" }
+        familyRelayPeer?.let(FamilyRelayPeerCodec::validate)
         val frame = PairingQrProtocol.newFrame(PairingStep.INVITE,
             keys.publicKeyBytes(), nowEpochMillis = System.currentTimeMillis())
         return store(current.copy(session = PairingSession(PairingRole.SUBJECT,
-            PairingPhase.WAIT_RESPONSE, keys.signPairingFrame(frame))))
+            PairingPhase.WAIT_RESPONSE, keys.signPairingFrame(frame)),
+            familyRelayPeer = familyRelayPeer))
     }
 
     /** Receipt is verified but DOES NOT constitute user consent. */
     @Synchronized
-    fun scan(rawQr: String): PairingSnapshot {
+    fun scan(rawQr: String, familyRelayPeer: FamilyRelayPeer? = null): PairingSnapshot {
         val current = storage.load()
+        familyRelayPeer?.let(FamilyRelayPeerCodec::validate)
         val incoming = PairingQrProtocol.decodeAndVerify(rawQr.trim(), System.currentTimeMillis())
         require(current.cancelledSessions[incoming.frame.sessionId]?.let {
             it > System.currentTimeMillis()
@@ -217,7 +250,8 @@ class LocalPairingManager(context: Context) {
         // signature-verified retransmission is a no-op in EVERY later phase, including COMPLETE.
         if (existing != null && listOf(existing.invite, existing.response, existing.grant,
                 existing.ack).any { it.isNotBlank() && it == incoming.encodedQr }) {
-            return current
+            return if (familyRelayPeer != null && current.familyRelayPeer != familyRelayPeer)
+                store(current.copy(familyRelayPeer = familyRelayPeer)) else current
         }
         val next = when (existing?.phase) {
             null -> {
@@ -258,7 +292,8 @@ class LocalPairingManager(context: Context) {
             }
             else -> throw IllegalArgumentException("Current screen does not expect a scanned QR")
         }
-        return store(current.copy(session = next))
+        return store(current.copy(session = next,
+            familyRelayPeer = familyRelayPeer ?: current.familyRelayPeer))
     }
 
     /** Explicit local approval at EACH trust-establishing step. */
@@ -330,7 +365,8 @@ class LocalPairingManager(context: Context) {
                 .entries.sortedByDescending { it.value }.take(32)
                 .associate { it.key to it.value }
         }
-        return store(current.copy(session = null, cancelledSessions = cancelled))
+        return store(current.copy(session = null, cancelledSessions = cancelled,
+            familyRelayPeer = null))
     }
 
     @Synchronized
@@ -350,7 +386,7 @@ class LocalPairingManager(context: Context) {
         val newPeer = SavedPeer(peerFrame.frame.relationId, peerFrame.frame.senderFingerprint,
             Base64.getUrlEncoder().withoutPadding().encodeToString(peerFrame.frame.senderPublicKey),
             role, peerFrame.frame.permissionBits)
-        return snapshot.copy(peers = snapshot.peers + newPeer)
+        return snapshot.copy(peers = snapshot.peers + newPeer, familyRelayPeer = null)
     }
 
     private fun decode(text: String): VerifiedPairingQr =

@@ -104,7 +104,7 @@ class S1GuardManager(context: Context) {
     @Volatile private var changed: (() -> Unit)? = null
     @Volatile private var discoveryError = ""
     @Volatile private var lanPairingAddress: String? = null
-    @Volatile private var familyPairingPeer: FamilyRelayPeer? = null
+    @Volatile private var familyPairingPeer: FamilyRelayPeer? = pairings.snapshot().familyRelayPeer
     @Volatile private var familyDiscoveredPeers: List<FamilyRelayPeer> = emptyList()
     @Volatile private var lanPairingToken: String? = null
     @Volatile private var lanPairingSessionId: String? = null
@@ -185,7 +185,7 @@ class S1GuardManager(context: Context) {
                 familyPairingPeer == null && remotePairing.current() == null) {
                 "请先结束当前邀请"
             }
-            invitation = requireNotNull(pairings.createInvitation().session).invite
+            invitation = requireNotNull(pairings.createInvitation(peer).session).invite
             familyPairingPeer = peer
         }
         signal()
@@ -201,17 +201,20 @@ class S1GuardManager(context: Context) {
                 val peer = familyPairingPeer
                 val session = pairings.snapshot().session
                 if (peer == null) {
-                    require(session == null && lanPairingAddress == null &&
-                        remotePairing.current() == null && pendingHelpOffer() == null &&
-                        frame.step == PairingStep.INVITE) { "正在处理其他绑定" }
+                    require(lanPairingAddress == null && remotePairing.current() == null &&
+                        pendingHelpOffer() == null) { "正在处理其他绑定" }
+                    if (session == null) require(frame.step == PairingStep.INVITE) {
+                        "当前没有可恢复的家庭绑定会话"
+                    }
                     require(relay.familyReady) { "家庭中继已断开" }
                 } else {
-                    require(peer.fingerprint == sender && peer.slot == slot && session != null) {
+                    require(peer.fingerprint == sender && session != null) {
                         "请求来自其他设备或中继"
                     }
                 }
-                val saved = pairings.scan(signed)
-                if (peer == null) familyPairingPeer = FamilyRelayPeer(sender, slot)
+                val currentPeer = FamilyRelayPeer(sender, slot)
+                val saved = pairings.scan(signed, currentPeer)
+                familyPairingPeer = if (saved.session?.phase == PairingPhase.COMPLETE) null else currentPeer
                 phase = saved.session?.phase
             }
             store.recordHandshake("同节点", frame.step.name, frame.relationId, "已验签",
@@ -280,7 +283,10 @@ class S1GuardManager(context: Context) {
             pairings.cancelPending()
             familyPairingPeer = null
         }
-        if (peer != null && sessionId != null) relay.cancelPairing(peer, sessionId)
+        if (peer != null && sessionId != null) {
+            val currentPeer = runCatching { relay.resolveFamilyPeer(peer.fingerprint) }.getOrNull() ?: peer
+            relay.cancelPairing(currentPeer, sessionId)
+        }
         signal()
     }
 
@@ -288,8 +294,7 @@ class S1GuardManager(context: Context) {
         synchronized(pairingGuard) {
             val peer = familyPairingPeer ?: return
             val session = pairings.snapshot().session ?: return
-            if (peer.slot != slot || peer.fingerprint != sender ||
-                session.phase == PairingPhase.COMPLETE) return
+            if (peer.fingerprint != sender || session.phase == PairingPhase.COMPLETE) return
             val expected = runCatching { PairingQrProtocol.decodeAndVerify(session.invite,
                 System.currentTimeMillis()).frame.sessionId }.getOrNull()
             if (sessionId != expected) return
@@ -301,7 +306,10 @@ class S1GuardManager(context: Context) {
     }
 
     private fun sendFamilyPairing(frame: String) {
-        val peer = requireNotNull(familyPairingPeer) { "同节点设备已失联" }
+        val previous = requireNotNull(familyPairingPeer) { "同节点设备已失联" }
+        val peer = relay.resolveFamilyPeer(previous.fingerprint)
+        familyPairingPeer = peer
+        pairings.setFamilyRelayPeer(peer)
         // Re-use exactly the same signed frame on retries. A relay transport
         // receipt only proves receipt; it never authorizes a helping relationship.
         relay.sendPairing(peer, frame)
