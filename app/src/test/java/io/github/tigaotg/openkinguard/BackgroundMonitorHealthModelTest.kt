@@ -102,6 +102,28 @@ class BackgroundMonitorHealthModelTest {
         ).allowed)
     }
 
+    @Test fun unexpectedTaskAbortIsRecordedAsFailure() {
+        BackgroundMonitorHealth.markSchedulerStopped()
+        BackgroundMonitorHealth.markServiceStarting(1L)
+        BackgroundMonitorHealth.markServiceRunning(2L)
+        BackgroundMonitorHealth.markSchedulerStarted(3L)
+        val generation = BackgroundMonitorHealth.beginTick(4L)
+        assertTrue(generation != null)
+
+        BackgroundMonitorHealth.abandonTick(generation!!, 5L)
+        val state = BackgroundMonitorHealth.snapshot(6L)
+        assertFalse(state.taskRunning)
+        assertEquals(BackgroundSchedulerState.TASK_FAILED, state.schedulerState)
+        assertEquals("BACKGROUND_TASK_ABORTED", state.lastTaskErrorCode)
+    }
+
+    @Test fun startupStageHasHumanReadableLabels() {
+        assertEquals("TCP 监听绑定",
+            BackgroundStartupStage.TCP_LISTENER_BIND.displayLabel)
+        assertEquals("后台调度器启动",
+            BackgroundStartupStage.SCHEDULER_START.displayLabel)
+    }
+
     @Test fun processExitDiagnosticsDoNotOverstateForceStopDetection() {
         val userRequested = BackgroundProcessExitSnapshot(
             kind = BackgroundProcessExitKind.USER_REQUESTED
