@@ -111,14 +111,15 @@ internal object BackgroundMonitorHealthPolicy {
 
     fun schedulerState(state: BackgroundHealthSnapshot, nowElapsed: Long):
         BackgroundSchedulerState {
-        if (state.schedulerClosed || state.schedulerStartedElapsed <= 0L)
+        if (state.schedulerStartedElapsed <= 0L)
             return BackgroundSchedulerState.NOT_STARTED
-        if (state.lastTaskErrorCode != null &&
-            state.lastTaskErrorElapsed >= state.lastSuccessfulTaskElapsed)
-            return BackgroundSchedulerState.TASK_FAILED
         if (state.taskRunning && state.lastTickStartedElapsed > 0L &&
             nowElapsed - state.lastTickStartedElapsed >= TASK_TIMEOUT_AFTER_MS)
             return BackgroundSchedulerState.STALLED
+        if (state.schedulerClosed) return BackgroundSchedulerState.NOT_STARTED
+        if (state.lastTaskErrorCode != null &&
+            state.lastTaskErrorElapsed >= state.lastSuccessfulTaskElapsed)
+            return BackgroundSchedulerState.TASK_FAILED
         if (state.lastTickElapsed <= 0L) {
             return if (nowElapsed - state.schedulerStartedElapsed >= TICK_STALLED_AFTER_MS)
                 BackgroundSchedulerState.STALLED else BackgroundSchedulerState.DELAYED
