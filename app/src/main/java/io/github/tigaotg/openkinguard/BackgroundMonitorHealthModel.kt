@@ -165,9 +165,7 @@ internal object BackgroundMonitorHealth {
             startupStage = BackgroundStartupStage.NONE,
             lastErrorCode = null,
             lastErrorDetail = null,
-            lastErrorElapsed = 0L,
-            recoveryAttemptCount = 0,
-            lastRecoveryElapsed = 0L
+            lastErrorElapsed = 0L
         )
     }
 
@@ -208,8 +206,12 @@ internal object BackgroundMonitorHealth {
             lastTickStartedElapsed = 0L,
             lastTickEndedElapsed = 0L,
             lastSuccessfulTaskElapsed = 0L,
-            taskRunning = false,
-            taskTimedOut = false,
+            // A previous scheduler task may still be unwinding after shutdownNow().
+            // Keep its lease until finishTick/failTick observes its actual completion.
+            lastTickStartedElapsed = if (current.taskRunning)
+                current.lastTickStartedElapsed else 0L,
+            taskRunning = current.taskRunning,
+            taskTimedOut = current.taskTimedOut,
             lastTaskErrorCode = null,
             lastTaskErrorElapsed = 0L
         )
@@ -226,7 +228,17 @@ internal object BackgroundMonitorHealth {
     }
 
     @Synchronized fun finishTick(generation: Long, nowElapsed: Long) {
-        if (current.schedulerClosed || current.schedulerGeneration != generation) return
+        if (!current.taskRunning) return
+        // An old scheduler may finish after a replacement has started. Release its
+        // process-wide task lease, but never let it mark the new scheduler healthy.
+        if (current.schedulerClosed || current.schedulerGeneration != generation) {
+            current = current.copy(
+                taskRunning = false,
+                taskTimedOut = false,
+                lastTickEndedElapsed = nowElapsed
+            )
+            return
+        }
         current = current.copy(
             schedulerState = BackgroundSchedulerState.HEALTHY,
             lastTickElapsed = nowElapsed,
@@ -238,13 +250,29 @@ internal object BackgroundMonitorHealth {
             lastTaskErrorElapsed = 0L,
             lastErrorCode = null,
             lastErrorDetail = null,
-            lastErrorElapsed = 0L
+            lastErrorElapsed = 0L,
+            // A completed critical tick, not merely startForeground(), proves recovery.
+            recoveryAttemptCount = 0,
+            lastRecoveryElapsed = 0L
         )
     }
 
     @Synchronized fun failTick(generation: Long, code: String, detail: String,
         nowElapsed: Long) {
-        if (current.schedulerClosed || current.schedulerGeneration != generation) return
+        if (!current.taskRunning) return
+        if (current.schedulerClosed || current.schedulerGeneration != generation) {
+            current = current.copy(
+                taskRunning = false,
+                taskTimedOut = false,
+                lastTickEndedElapsed = nowElapsed,
+                lastTaskErrorCode = code,
+                lastTaskErrorElapsed = nowElapsed,
+                lastErrorCode = code,
+                lastErrorDetail = "旧调度器任务失败：$detail",
+                lastErrorElapsed = nowElapsed
+            )
+            return
+        }
         current = current.copy(
             schedulerState = BackgroundSchedulerState.TASK_FAILED,
             lastTickElapsed = nowElapsed,
@@ -264,8 +292,8 @@ internal object BackgroundMonitorHealth {
             schedulerState = BackgroundSchedulerState.NOT_STARTED,
             schedulerGeneration = current.schedulerGeneration + 1L,
             schedulerClosed = true,
-            taskRunning = false,
-            taskTimedOut = false
+            // Do not pretend a task was cancelled just because its executor was closed.
+            // Its finally block must release the lease after it actually returns.
         )
     }
 
