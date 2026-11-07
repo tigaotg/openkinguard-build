@@ -37,4 +37,11 @@ class BackgroundMonitorPolicyTest {
         assertFalse(BackgroundMonitorPolicy.mayAutoRecover(
             BackgroundConsent.ENABLED, healthy = true))
     }
+
+    @Test fun invalidConsentFailsClosed() {
+        assertFalse(BackgroundMonitorPolicy.mayAutoRecover(
+            BackgroundConsent.CONSENT_INVALID, healthy = false))
+        assertEquals(BackgroundPhase.CONSENT_INVALID, BackgroundMonitorPolicy.phase(
+            BackgroundConsent.CONSENT_INVALID, false, false, false))
+    }
 }
