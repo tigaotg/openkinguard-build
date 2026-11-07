@@ -135,6 +135,7 @@ class S1LanService : Service() {
         }
 
         fun requestStop(context: Context): String = runCatching {
+            startupFailure = null
             BackgroundConsentStore.set(context, false)
             context.startService(Intent(context, S1LanService::class.java)
                 .setAction(ACTION_STOP))
@@ -179,32 +180,10 @@ class S1LanService : Service() {
             return START_NOT_STICKY
         }
 
-        BackgroundMonitorHealth.markServiceStarting(SystemClock.elapsedRealtime())
-        startupFailure = null
-        try {
-            createAndStartForegroundNotification()
-        } catch (error: Exception) {
-            recordStartupFailure(
-                BackgroundStartupStage.NOTIFICATION_CREATE,
-                "NOTIFICATION_START_FAILED",
-                error,
-                blockedBySystem = error.javaClass.simpleName.contains(
-                    "ForegroundServiceStartNotAllowedException"
-                )
-            )
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        registerNetworkMonitor()
-
         val existingScheduler = scheduler
         if (existingScheduler != null) {
             val probe = runtimeProbe()
-            if (probe.healthy || probe.starting) {
-                BackgroundMonitorHealth.markServiceRunning(SystemClock.elapsedRealtime())
-                return START_STICKY
-            }
+            if (probe.healthy || probe.starting) return START_STICKY
             if (!stopSchedulerForRestart()) {
                 recordStartupFailure(
                     BackgroundStartupStage.SCHEDULER_START,
@@ -216,6 +195,35 @@ class S1LanService : Service() {
                 return START_NOT_STICKY
             }
         }
+
+        BackgroundMonitorHealth.markServiceStarting(SystemClock.elapsedRealtime())
+        startupFailure = null
+        val notification = try {
+            createForegroundNotification()
+        } catch (error: Exception) {
+            recordStartupFailure(
+                BackgroundStartupStage.NOTIFICATION_CREATE,
+                "NOTIFICATION_CREATE_FAILED",
+                error,
+                blockedBySystem = false
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (error: Exception) {
+            recordStartupFailure(
+                BackgroundStartupStage.FOREGROUND_START,
+                "FOREGROUND_START_FAILED",
+                error,
+                blockedBySystem = isSystemStartBlocked(error)
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        registerNetworkMonitor()
 
         var stage = BackgroundStartupStage.MANAGER_INITIALIZATION
         var attached = false
@@ -270,7 +278,7 @@ class S1LanService : Service() {
         }
     }
 
-    private fun createAndStartForegroundNotification() {
+    private fun createForegroundNotification(): Notification {
         val notifications = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
             notifications.createNotificationChannel(NotificationChannel(
@@ -287,7 +295,7 @@ class S1LanService : Service() {
             this, 1, Intent(this, S1LanService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = Notification.Builder(this, CHANNEL_ID)
+        return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("OpenKinGuard · 本机监听服务")
             .setContentText("本机服务状态可检查；不代表家属设备在线")
@@ -297,11 +305,6 @@ class S1LanService : Service() {
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, "停止监听", stopIntent).build())
             .build()
-        try {
-            startForeground(NOTIFICATION_ID, notification)
-        } catch (error: Exception) {
-            throw ForegroundNotificationStartException(error)
-        }
     }
 
     private fun registerNetworkMonitor() {
@@ -415,15 +418,15 @@ class S1LanService : Service() {
         error: Exception,
         blockedBySystem: Boolean
     ) {
-        val cause = if (error is ForegroundNotificationStartException) error.cause ?: error
-            else error
         val detail = when {
-            blockedBySystem -> "系统限制阻止前台服务启动：${cause.javaClass.simpleName}"
+            blockedBySystem -> "系统限制阻止前台服务启动：${error.javaClass.simpleName}"
             stage == BackgroundStartupStage.NOTIFICATION_CREATE ->
-                "前台通知创建或启动失败：${cause.javaClass.simpleName}"
+                "前台通知创建失败：${error.javaClass.simpleName}"
+            stage == BackgroundStartupStage.FOREGROUND_START ->
+                "前台服务启动失败：${error.javaClass.simpleName}"
             stage == BackgroundStartupStage.TCP_LISTENER_BIND ->
-                "本机 TCP 监听启动失败：${cause.message ?: cause.javaClass.simpleName}"
-            else -> "后台服务在 ${stage.name} 阶段失败：${cause.message ?: cause.javaClass.simpleName}"
+                "本机 TCP 监听启动失败：${error.message ?: error.javaClass.simpleName}"
+            else -> "后台服务在 ${stage.name} 阶段失败：${error.message ?: error.javaClass.simpleName}"
         }
         startupFailure = detail
         BackgroundMonitorHealth.markStartupFailure(
@@ -432,8 +435,15 @@ class S1LanService : Service() {
         Log.w("OpenKinGuard", detail, cause)
     }
 
-    private class ForegroundNotificationStartException(cause: Exception) :
-        RuntimeException(cause)
+    private fun isSystemStartBlocked(error: Throwable): Boolean {
+        var cause: Throwable? = error
+        while (cause != null) {
+            if (cause.javaClass.simpleName == "ForegroundServiceStartNotAllowedException")
+                return true
+            cause = cause.cause
+        }
+        return false
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // stopWithTask=false: removing the activity task does not revoke user consent
