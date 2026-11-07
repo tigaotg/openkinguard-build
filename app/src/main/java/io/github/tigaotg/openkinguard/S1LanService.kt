@@ -226,6 +226,7 @@ class S1LanService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        BackgroundMonitorHealth.markStartupStage(BackgroundStartupStage.FOREGROUND_START)
         try {
             startForeground(NOTIFICATION_ID, notification)
         } catch (error: Exception) {
@@ -244,11 +245,13 @@ class S1LanService : Service() {
         var stage = BackgroundStartupStage.MANAGER_INITIALIZATION
         var attached = false
         try {
-            S1Runtime.attachService(applicationContext)
-            attached = true
+            BackgroundMonitorHealth.markStartupStage(stage)
+            val manager = S1Runtime.manager(applicationContext)
 
             stage = BackgroundStartupStage.TCP_LISTENER_BIND
-            val manager = S1Runtime.manager(applicationContext)
+            BackgroundMonitorHealth.markStartupStage(stage)
+            S1Runtime.attachService(applicationContext)
+            attached = true
             var tcpState = manager.tcpListenerHealth()
             var waitCount = 0
             while (tcpState == BackgroundTcpListenerState.BINDING && waitCount < 10) {
@@ -262,6 +265,7 @@ class S1LanService : Service() {
             }
 
             stage = BackgroundStartupStage.SCHEDULER_START
+            BackgroundMonitorHealth.markStartupStage(stage)
             val executor = Executors.newSingleThreadScheduledExecutor { job ->
                 Thread(job, "okg-s2-background-heartbeat").apply { isDaemon = true }
             }
@@ -424,6 +428,9 @@ class S1LanService : Service() {
             )
             Log.w("OpenKinGuard", "Background listener tick failed", error)
         } finally {
+            BackgroundMonitorHealth.abandonTick(
+                generation, SystemClock.elapsedRealtime()
+            )
             tickInProgress.set(false)
         }
     }
