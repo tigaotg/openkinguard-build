@@ -174,7 +174,8 @@ internal object BackgroundStartupCheck {
         val probe = S1LanService.runtimeProbe()
         val health = probe.health
         val phase = BackgroundMonitorPolicy.phase(consent, probe.healthy,
-            recovering || probe.starting, restricted)
+            recovering || probe.starting,
+            restricted || health.serviceState == BackgroundServiceState.BLOCKED_BY_SYSTEM)
         return BackgroundReadiness(
             consent = consent,
             phase = phase,
