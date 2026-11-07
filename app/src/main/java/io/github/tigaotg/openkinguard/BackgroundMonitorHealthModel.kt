@@ -186,6 +186,10 @@ internal object BackgroundMonitorHealth {
         )
     }
 
+    @Synchronized fun markStartupStage(stage: BackgroundStartupStage) {
+        current = current.copy(startupStage = stage)
+    }
+
     @Synchronized fun markStartupFailure(
         stage: BackgroundStartupStage,
         code: String,
@@ -304,6 +308,29 @@ internal object BackgroundMonitorHealth {
         )
     }
 
+    @Synchronized fun abandonTick(generation: Long, nowElapsed: Long) {
+        if (!current.taskRunning) return
+        if (!current.schedulerClosed && current.schedulerGeneration == generation) {
+            current = current.copy(
+                schedulerState = BackgroundSchedulerState.TASK_FAILED,
+                lastTickEndedElapsed = nowElapsed,
+                taskRunning = false,
+                taskTimedOut = false,
+                lastTaskErrorCode = "BACKGROUND_TASK_ABORTED",
+                lastTaskErrorElapsed = nowElapsed,
+                lastErrorCode = "BACKGROUND_TASK_ABORTED",
+                lastErrorDetail = "后台关键任务异常终止",
+                lastErrorElapsed = nowElapsed
+            )
+        } else {
+            current = current.copy(
+                taskRunning = false,
+                taskTimedOut = false,
+                lastTickEndedElapsed = nowElapsed
+            )
+        }
+    }
+
     @Synchronized fun markSchedulerStopped() {
         current = current.copy(
             schedulerState = BackgroundSchedulerState.NOT_STARTED,
@@ -350,6 +377,17 @@ internal object BackgroundMonitorHealth {
         current = current.copy(lastRecoveryTrigger = trigger)
     }
 }
+
+internal val BackgroundStartupStage.displayLabel: String
+    get() = when (this) {
+        BackgroundStartupStage.NONE -> "无"
+        BackgroundStartupStage.PERMISSION_CHECK -> "权限检查"
+        BackgroundStartupStage.NOTIFICATION_CREATE -> "通知创建"
+        BackgroundStartupStage.FOREGROUND_START -> "前台服务启动"
+        BackgroundStartupStage.MANAGER_INITIALIZATION -> "共享管理器初始化"
+        BackgroundStartupStage.TCP_LISTENER_BIND -> "TCP 监听绑定"
+        BackgroundStartupStage.SCHEDULER_START -> "后台调度器启动"
+    }
 
 internal val BackgroundServiceState.displayLabel: String
     get() = when (this) {
