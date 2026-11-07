@@ -11,5 +11,6 @@
 
 ## Validation
 - New unit tests cover readiness warnings and persisted family-relay peer validation.
-- GitHub Actions build and test status must be checked before distributing an APK.
+- The CI-produced `FamilyRelayTest` APK is a one-off signed, version-specific fresh-install package (`.familyrelaytest104`); it does not upgrade an older PilotV4 or earlier one-off test installation.
+- The in-place PilotV4 signing workflow was not able to run because the repository's `OKG_PILOT_V4_SIGNING_PASSWORD` / `OKG_PILOT_V4_KEYSTORE_B64` secrets are unavailable. The PilotV4 APK is therefore unsigned; do not attempt to install it as an update.
 - Real Android 10/17 devices, carrier changes, public IPv6, and cross-network SOS/P2P are not validated by unit tests.
