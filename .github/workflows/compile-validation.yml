@@ -31,6 +31,7 @@ jobs:
         run: |
           # Keep Phase 2 validation source-only. Never add assemble*, bundle*, package*,
           # install*, or connected Android test tasks to this workflow.
+          # This workflow validates the current source tree and JVM tests only.
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           sed -i 's/compose-bom:2026.09.00/compose-bom:2025.10.00/' app/build.gradle.kts
           chmod +x gradlew
