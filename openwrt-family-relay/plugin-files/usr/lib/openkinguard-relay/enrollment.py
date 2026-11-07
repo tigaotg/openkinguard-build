@@ -21,6 +21,7 @@ ID = re.compile(r"[0-9a-f]{32}\Z")
 INVITE_SECONDS = 300
 PENDING_SECONDS = 600
 MAX_PENDING = 16
+MAX_APPROVED = 128
 
 
 def clean_device_label(raw: str, limit: int = 40) -> str:
@@ -48,13 +49,24 @@ class EnrollmentStore:
             now = time.time()
             invites = data.setdefault("invites", {})
             pending = data.setdefault("pending", {})
+            pruned = False
             for key, value in list(invites.items()):
                 if value.get("expires", 0) <= now:
                     del invites[key]
+                    pruned = True
             for key, value in list(pending.items()):
                 if value.get("status") != "approved" and value.get("expires", 0) <= now:
                     del pending[key]
+                    pruned = True
+            approved = sorted(
+                ((key, value) for key, value in pending.items()
+                 if value.get("status") == "approved"),
+                key=lambda item: item[1].get("created", 0))
+            for key, _ in approved[:-MAX_APPROVED]:
+                del pending[key]
+                pruned = True
             result, modified = callback(data, now)
+            modified = modified or pruned
             if modified:
                 fd, tmp = tempfile.mkstemp(prefix="state-", dir=self.directory)
                 try:
@@ -89,7 +101,7 @@ class EnrollmentStore:
         def update(data, now):
             if digest not in data["invites"]:
                 raise ValueError("expired or already used invitation")
-            if sum(item["status"] == "pending" for item in data["pending"].values()) >= MAX_PENDING:
+            if sum(item.get("status") != "approved" for item in data["pending"].values()) >= MAX_PENDING:
                 raise ValueError("enrollment request queue is full")
             del data["invites"][digest]  # One QR grants at most one application.
             request_id = secrets.token_hex(16)

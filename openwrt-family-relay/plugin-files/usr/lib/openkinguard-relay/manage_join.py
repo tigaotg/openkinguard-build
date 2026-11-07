@@ -20,6 +20,27 @@ CERT = Path("/etc/ssl/openkinguard/fullchain.pem")
 FIREWALL_SECTION = "firewall.okg_family_relay_ipv6"
 FIREWALL_LABEL = "OpenKinGuard family relay IPv6"
 REGISTRY_FILE = Path("/etc/openkinguard-relay/devices.json")
+VERSION_FILE = Path(__file__).with_name("VERSION")
+
+
+def installed_version() -> str:
+    try:
+        value = VERSION_FILE.read_text(encoding="ascii").strip()
+    except OSError:
+        return "unknown"
+    return value if value and len(value) <= 32 else "unknown"
+
+
+def restart_relay_fail_closed() -> None:
+    try:
+        checked_call("/etc/init.d/openkinguard-relay", "restart")
+    except Exception:
+        # A stale in-memory allowlist must never keep a revoked device online.
+        try:
+            checked_call("/etc/init.d/openkinguard-relay", "stop")
+        except Exception:
+            pass
+        raise
 
 
 def ensure_state_dir() -> None:
@@ -72,9 +93,21 @@ def change_device(action: str, fingerprint: str, store: EnrollmentStore,
                      "openkinguard-relay.main.allowed_device=" + fingerprint)
         checked_call("uci", "commit", "openkinguard-relay")
         # Also invalidate the temporary approval that would otherwise bypass UCI.
-        store.revoke_approval(fingerprint)
-        registry.revoke(fingerprint)
-        checked_call("/etc/init.d/openkinguard-relay", "restart")
+        # If this write fails, stop the relay: its old in-memory allowlist is unsafe.
+        try:
+            store.revoke_approval(fingerprint)
+        except Exception:
+            try:
+                checked_call("/etc/init.d/openkinguard-relay", "stop")
+            except Exception:
+                pass
+            raise
+        # Registry metadata is secondary. Even if it cannot be written, reload the
+        # UCI allowlist and invalidate existing sessions before reporting the error.
+        try:
+            registry.revoke(fingerprint)
+        finally:
+            restart_relay_fail_closed()
         return {"ok": True, "fingerprint": fingerprint, "status": "revoked"}
     if action == "delete-device":
         # Delete only previously revoked devices. Keep UCI authorization
@@ -162,7 +195,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("invite", "list", "approve", "reject",
                                            "revoke", "restore", "delete-device", "set-note",
-                                           "firewall-status", "open-ipv6", "close-ipv6"))
+                                           "firewall-status", "open-ipv6", "close-ipv6", "version"))
     parser.add_argument("request_id", nargs="?")
     parser.add_argument("value", nargs="?")
     args = parser.parse_args()
@@ -174,7 +207,11 @@ def main() -> None:
         registry = DeviceRegistry(REGISTRY_FILE)
         if args.value is not None and args.action != "set-note":
             raise ValueError("该指令不接受额外参数")
-        if args.action in ("firewall-status", "open-ipv6", "close-ipv6"):
+        if args.action == "version":
+            if args.request_id:
+                raise ValueError("version 不接受额外参数")
+            result = {"ok": True, "version": installed_version()}
+        elif args.action in ("firewall-status", "open-ipv6", "close-ipv6"):
             if args.request_id:
                 raise ValueError("防火墙指令不接受额外参数")
             result = ipv6_firewall(args.action)

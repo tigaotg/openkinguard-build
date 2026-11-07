@@ -58,7 +58,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.DynamicList, 'allowed_device', '允许接入的家人设备指纹',
-			'每行一个 OpenKinGuard 设备的 64 位小写十六进制指纹。未填写时服务拒绝启动。' +
+			'每行一个 OpenKinGuard 设备的 64 位小写十六进制指纹。空白名单时仅允许提交签名加入申请，未批准设备不能转发业务消息。' +
 			'只允许本人的家人设备，不要填随机示例值。建议在下方“已授权设备”中取消或恢复，' +
 			'手工删除此名单可能缺失撤销时间记录。');
 		o.rmempty = true;
@@ -83,6 +83,14 @@ return view.extend({
 		o.rmempty = false;
 
 		return m.render().then(function(settings) {
+			var versionBox = E('div', { 'style': 'margin:10px 0;padding:8px;border-left:3px solid #4c9f70' },
+				E('span', {}, '正在读取家庭中继插件版本…'));
+			joinAction('version').then(function(data) {
+				versionBox.replaceChildren(E('strong', {}, '已安装插件版本：' + data.version),
+					E('p', { 'style': 'margin:4px 0 0' }, '这是路由器上已安装的插件文件版本；不代表中继服务当前已启用或公网可达。'));
+			}).catch(function(error) {
+				versionBox.replaceChildren(E('span', {}, '版本读取失败：' + (error.message || error)));
+			});
 			var qrBox = E('div', { 'style': 'margin-top:12px' });
 			var pendingBox = E('div', { 'style': 'margin-top:10px' });
 			var approvedBox = E('div', { 'style': 'margin-top:10px' });
@@ -236,7 +244,7 @@ return view.extend({
 				revokedBox
 			]);
 			refreshAll();
-			return E('div', {}, [settings, joinPanel]);
+			return E('div', {}, [settings, versionBox, joinPanel]);
 		});
 	}
 });

@@ -157,6 +157,8 @@ class Relay:
         for item in self.offline:
             if item.recipient != recipient or item.inflight:
                 continue
+            if sum(p.recipient == recipient for p in self.waiting.values()) >= MAX_PENDING_PER_DEVICE:
+                break
             item.inflight = True
             self.waiting[item.request_id] = Pending(item.sender, recipient,
                                                     time.monotonic(), queued=True)
@@ -265,7 +267,8 @@ class Relay:
                 frame = payload.get("frame")
                 if not isinstance(frame, str) or not 100 <= len(frame) <= 4000 or not frame.isascii():
                     raise ValueError("invalid pairing frame")
-            if sum(p.sender == identity for p in self.waiting.values()) >= MAX_PENDING_PER_DEVICE:
+            if (sum(p.sender == identity for p in self.waiting.values()) >= MAX_PENDING_PER_DEVICE or
+                    sum(p.recipient == recipient for p in self.waiting.values()) >= MAX_PENDING_PER_DEVICE):
                 await self.send(identity, {"t": "error", "id": request_id, "code": "busy"})
                 return
             if request_id in self.waiting:
@@ -326,6 +329,8 @@ class Relay:
                                 if item.request_id != request_id]
             else:
                 await self.send(pending.sender, response)
+            # A response freed one recipient slot; send the next queued item, if any.
+            await self.flush_offline(identity)
         else:
             raise ValueError("unsupported message type")
 
