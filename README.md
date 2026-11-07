@@ -1,4 +1,7 @@
-# OpenKinGuard（开源家人守护）
+# OpenKinGuard
+
+> 当前审查测试分支：Android 0.10.4（versionCode 74）+ OpenWrt 家庭中继 0.3.7。代码位于 `codex/app-relay-audit-0.10.4-relay-0.3.7`，尚未合并到 `main`，也未部署到任何用户路由器。详见 `RELEASE_NOTES_0.10.4.md` 与 `RELEASE_NOTES_RELAY_0.3.7.md`。
+（开源家人守护）
 
 > **当前开发预览：0.10.2-family-relay-pairing（versionCode 72）。** “连接家人”新增“同家庭中继添加家人”：可列出同节点在线且经管理员批准的设备指纹，发送签名邀请；对方明确同意、双方核对8位安全码后才创建帮助关系。要求手机和家庭中继同时升级，暂未完成 Android 10/17 双机实测。详见 [0.10.2 更新说明](RELEASE_NOTES_0.10.2.md)。
 
