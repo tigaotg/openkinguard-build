@@ -29,6 +29,7 @@ internal data class BackgroundHealthSnapshot(
     val startupStage: BackgroundStartupStage = BackgroundStartupStage.NONE,
     val schedulerState: BackgroundSchedulerState = BackgroundSchedulerState.NOT_STARTED,
     val schedulerStartedElapsed: Long = 0L,
+    val schedulerGeneration: Long = 0L,
     val schedulerClosed: Boolean = true,
     val lastTickElapsed: Long = 0L,
     val lastTickStartedElapsed: Long = 0L,
@@ -201,6 +202,7 @@ internal object BackgroundMonitorHealth {
         current = current.copy(
             schedulerState = BackgroundSchedulerState.DELAYED,
             schedulerStartedElapsed = nowElapsed,
+            schedulerGeneration = current.schedulerGeneration + 1L,
             schedulerClosed = false,
             lastTickElapsed = 0L,
             lastTickStartedElapsed = 0L,
@@ -213,18 +215,18 @@ internal object BackgroundMonitorHealth {
         )
     }
 
-    @Synchronized fun beginTick(nowElapsed: Long): Boolean {
-        if (current.schedulerClosed || current.taskRunning) return false
+    @Synchronized fun beginTick(nowElapsed: Long): Long? {
+        if (current.schedulerClosed || current.taskRunning) return null
         current = current.copy(
             taskRunning = true,
             lastTickStartedElapsed = nowElapsed,
             taskTimedOut = false
         )
-        return true
+        return current.schedulerGeneration
     }
 
-    @Synchronized fun finishTick(nowElapsed: Long) {
-        if (current.schedulerClosed) return
+    @Synchronized fun finishTick(generation: Long, nowElapsed: Long) {
+        if (current.schedulerClosed || current.schedulerGeneration != generation) return
         current = current.copy(
             schedulerState = BackgroundSchedulerState.HEALTHY,
             lastTickElapsed = nowElapsed,
@@ -233,12 +235,16 @@ internal object BackgroundMonitorHealth {
             taskRunning = false,
             taskTimedOut = false,
             lastTaskErrorCode = null,
-            lastTaskErrorElapsed = 0L
+            lastTaskErrorElapsed = 0L,
+            lastErrorCode = null,
+            lastErrorDetail = null,
+            lastErrorElapsed = 0L
         )
     }
 
-    @Synchronized fun failTick(code: String, detail: String, nowElapsed: Long) {
-        if (current.schedulerClosed) return
+    @Synchronized fun failTick(generation: Long, code: String, detail: String,
+        nowElapsed: Long) {
+        if (current.schedulerClosed || current.schedulerGeneration != generation) return
         current = current.copy(
             schedulerState = BackgroundSchedulerState.TASK_FAILED,
             lastTickElapsed = nowElapsed,
@@ -256,6 +262,7 @@ internal object BackgroundMonitorHealth {
     @Synchronized fun markSchedulerStopped() {
         current = current.copy(
             schedulerState = BackgroundSchedulerState.NOT_STARTED,
+            schedulerGeneration = current.schedulerGeneration + 1L,
             schedulerClosed = true,
             taskRunning = false,
             taskTimedOut = false
