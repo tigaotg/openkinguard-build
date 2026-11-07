@@ -46,4 +46,17 @@ class BackgroundMonitorReadinessTest {
         assertTrue(state.needsAttention)
         assertTrue(state.advice().any { it.contains("精确闹钟") })
     }
+
+    @Test fun noNetworkIsShownSeparatelyFromLocalServicePhase() {
+        val state = readiness().copy(health = BackgroundHealthSnapshot(
+            serviceState = BackgroundServiceState.RUNNING,
+            schedulerState = BackgroundSchedulerState.HEALTHY,
+            schedulerClosed = false,
+            tcpListenerState = BackgroundTcpListenerState.LISTENING,
+            networkState = BackgroundNetworkState.NO_NETWORK
+        ))
+        assertTrue(state.needsAttention)
+        assertTrue(state.advice().any { it.contains("系统未报告可用网络") })
+        assertTrue(state.advice().any { it.contains("远端家属可达性") })
+    }
 }
