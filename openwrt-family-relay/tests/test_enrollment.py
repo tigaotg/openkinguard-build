@@ -12,8 +12,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] /
                        "plugin-files/usr/lib/openkinguard-relay"))
-from enrollment import EnrollmentStore
+from enrollment import EnrollmentStore, MAX_APPROVED
 from relay import Relay, JOIN_CONTEXT, enc, dec
+import manage_join
+from unittest.mock import Mock, patch
 
 
 class EnrollmentTests(unittest.TestCase):
@@ -58,6 +60,30 @@ class EnrollmentTests(unittest.TestCase):
         self.assertEqual(self.store.status(request_id, "b" * 64), "expired")
         self.assertFalse(self.store.is_approved(self.fp))
 
+    def test_approved_runtime_cache_is_bounded(self):
+        persisted = []
+        first_request = None
+        first_fingerprint = None
+        last_request = None
+        last_fingerprint = None
+        for index in range(MAX_APPROVED + 2):
+            fingerprint = f"{index:064x}"
+            request_id = self.store.submit(self.store.new_invite(), fingerprint)
+            self.store.decide(request_id, True, persist_approval=persisted.append)
+            if index == 0:
+                first_request, first_fingerprint = request_id, fingerprint
+            last_request, last_fingerprint = request_id, fingerprint
+        # Any subsequent state access prunes old transient approvals. Durable
+        # UCI authorization remains the authoritative allowlist.
+        self.assertFalse(self.store.is_approved(first_fingerprint))
+        self.assertTrue(self.store.is_approved(last_fingerprint))
+        state = json.loads((pathlib.Path(self.tmp.name) / "state.json").read_text())
+        approved = [item for item in state["pending"].values()
+                    if item["status"] == "approved"]
+        self.assertLessEqual(len(approved), MAX_APPROVED)
+        self.assertEqual(self.store.status(first_request, first_fingerprint), "expired")
+        self.assertEqual(len(persisted), MAX_APPROVED + 2)
+
     def test_owner_revocation_removes_ephemeral_approval(self):
         request_id = self.store.submit(self.store.new_invite(), self.fp,
                                        "家人的荣耀手机", "Honor 7X")
@@ -69,6 +95,73 @@ class EnrollmentTests(unittest.TestCase):
         self.store.revoke_approval(self.fp)
         self.assertFalse(self.store.is_approved(self.fp))
         self.assertEqual(self.store.status(request_id, self.fp), "expired")
+
+
+class RevocationSafetyTests(unittest.TestCase):
+    def test_revoke_stops_before_allowlist_mutation_and_restarts_afterward(self):
+        fingerprint = "c" * 64
+        store = Mock()
+        registry = Mock()
+        calls = []
+
+        def checked(*args):
+            calls.append(args)
+            return ""
+
+        with patch.object(manage_join, "allowed_fingerprints", return_value={fingerprint}), \
+             patch.object(manage_join, "checked_call", side_effect=checked):
+            result = manage_join.change_device("revoke", fingerprint, store, registry)
+
+        self.assertEqual(result["status"], "revoked")
+        self.assertEqual(calls[0], ("/etc/init.d/openkinguard-relay", "stop"))
+        self.assertLess(calls.index(("uci", "-q", "del_list",
+            "openkinguard-relay.main.allowed_device=" + fingerprint)),
+            calls.index(("uci", "commit", "openkinguard-relay")))
+        self.assertEqual(calls[-1], ("/etc/init.d/openkinguard-relay", "restart"))
+        store.revoke_approval.assert_called_once_with(fingerprint)
+        registry.revoke.assert_called_once_with(fingerprint)
+
+    def test_transient_approval_failure_leaves_relay_stopped(self):
+        fingerprint = "d" * 64
+        store = Mock()
+        store.revoke_approval.side_effect = OSError("state file locked")
+        registry = Mock()
+        calls = []
+
+        def checked(*args):
+            calls.append(args)
+            return ""
+
+        with patch.object(manage_join, "allowed_fingerprints", return_value={fingerprint}), \
+             patch.object(manage_join, "checked_call", side_effect=checked):
+            with self.assertRaises(OSError):
+                manage_join.change_device("revoke", fingerprint, store, registry)
+
+        self.assertEqual(calls[0], ("/etc/init.d/openkinguard-relay", "stop"))
+        self.assertNotIn(("/etc/init.d/openkinguard-relay", "restart"), calls)
+        registry.revoke.assert_not_called()
+
+    def test_registry_failure_does_not_skip_relay_reload(self):
+        fingerprint = "e" * 64
+        store = Mock()
+        registry = Mock()
+        registry.revoke.side_effect = OSError("registry storage full")
+        calls = []
+
+        def checked(*args):
+            calls.append(args)
+            return ""
+
+        with patch.object(manage_join, "allowed_fingerprints", return_value={fingerprint}), \
+             patch.object(manage_join, "checked_call", side_effect=checked):
+            with self.assertRaises(OSError):
+                manage_join.change_device("revoke", fingerprint, store, registry)
+
+        self.assertEqual(calls[0], ("/etc/init.d/openkinguard-relay", "stop"))
+        self.assertEqual(calls[-1], ("/etc/init.d/openkinguard-relay", "restart"))
+
+    def test_installed_version_is_read_from_runtime_marker(self):
+        self.assertEqual(manage_join.installed_version(), "0.3.7")
 
 
 class ScriptedJoinSocket:
