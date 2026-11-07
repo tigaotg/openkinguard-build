@@ -2610,6 +2610,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                     style = MaterialTheme.typography.bodySmall)
                                 Text("最近恢复触发：" + check.health.lastRecoveryTrigger.displayLabel,
                                     style = MaterialTheme.typography.bodySmall)
+                                Text("上次进程退出原因：" + check.previousProcessExit.displayLabel,
+                                    style = MaterialTheme.typography.bodySmall)
+                                check.previousProcessExit.detail?.takeIf { it.isNotBlank() }?.let {
+                                    Text("系统退出说明：" + it, style = MaterialTheme.typography.bodySmall)
+                                }
                                 Text("远端家属可达性：本阶段不检测；本机服务和网络状态不能证明家属在线。",
                                     style = MaterialTheme.typography.bodySmall)
                                 if (check.health.recoveryAttemptCount > 0) Text(
@@ -3199,6 +3204,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         style = MaterialTheme.typography.bodySmall)
                     Text("最近恢复触发：" + check.health.lastRecoveryTrigger.displayLabel,
                         style = MaterialTheme.typography.bodySmall)
+                    Text("上次进程退出原因：" + check.previousProcessExit.displayLabel,
+                        style = MaterialTheme.typography.bodySmall)
+                    check.previousProcessExit.detail?.takeIf { it.isNotBlank() }?.let {
+                        Text("系统退出说明：" + it, style = MaterialTheme.typography.bodySmall)
+                    }
                     Text("家属设备是否可达：本阶段不检测，不能由本机状态推断。",
                         style = MaterialTheme.typography.bodySmall)
                     check.health.lastErrorDetail?.takeIf { it.isNotBlank() }?.let {
