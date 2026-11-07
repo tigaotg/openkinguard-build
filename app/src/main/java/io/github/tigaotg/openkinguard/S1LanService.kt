@@ -32,7 +32,7 @@ class S1LanService : Service() {
 
         @Volatile private var startupFailure: String? = null
 
-        data class Probe(
+        internal data class Probe(
             val healthy: Boolean,
             val starting: Boolean,
             val failure: String?,
@@ -40,7 +40,7 @@ class S1LanService : Service() {
         )
 
         /** Local service health is independent of network availability and remote peer reachability. */
-        fun runtimeProbe(): Probe {
+        internal fun runtimeProbe(): Probe {
             val now = SystemClock.elapsedRealtime()
             BackgroundMonitorHealth.setTcpListenerState(S1Runtime.tcpListenerState())
             val health = BackgroundMonitorHealth.snapshot(now)
@@ -85,7 +85,7 @@ class S1LanService : Service() {
         }
 
         /** A bounded recovery request for users who previously opted in. */
-        fun requestAutoRecovery(
+        internal fun requestAutoRecovery(
             context: Context,
             trigger: BackgroundRecoveryTrigger = BackgroundRecoveryTrigger.APP_FOREGROUND
         ): String {
