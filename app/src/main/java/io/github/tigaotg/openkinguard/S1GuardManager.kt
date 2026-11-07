@@ -1725,6 +1725,7 @@ class S1GuardManager(context: Context) {
         if (!server.isBound) return BackgroundTcpListenerState.BINDING
         val thread = listenerAcceptThread ?: return BackgroundTcpListenerState.BINDING
         if (thread.state == Thread.State.NEW) return BackgroundTcpListenerState.BINDING
+        if (thread.isAlive && !listenerLoopRunning) return BackgroundTcpListenerState.BINDING
         return if (thread.isAlive && listenerLoopRunning)
             BackgroundTcpListenerState.LISTENING
         else BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY
