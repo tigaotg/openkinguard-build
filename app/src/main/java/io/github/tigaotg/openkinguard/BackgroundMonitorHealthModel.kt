@@ -23,6 +23,11 @@ internal enum class BackgroundNetworkState {
     NO_NETWORK, NETWORK_AVAILABLE, NETWORK_CHANGED, UNKNOWN
 }
 
+internal enum class BackgroundRecoveryTrigger {
+    NONE, USER_REQUEST, APP_FOREGROUND, BOOT_COMPLETED, PACKAGE_REPLACED,
+    SYSTEM_STICKY_RESTART
+}
+
 internal data class BackgroundHealthSnapshot(
     val serviceState: BackgroundServiceState = BackgroundServiceState.STOPPED,
     val serviceStateElapsed: Long = 0L,
@@ -46,7 +51,8 @@ internal data class BackgroundHealthSnapshot(
     val lastErrorDetail: String? = null,
     val lastErrorElapsed: Long = 0L,
     val recoveryAttemptCount: Int = 0,
-    val lastRecoveryElapsed: Long = 0L
+    val lastRecoveryElapsed: Long = 0L,
+    val lastRecoveryTrigger: BackgroundRecoveryTrigger = BackgroundRecoveryTrigger.NONE
 )
 
 internal data class BackgroundRecoveryDecision(
@@ -328,6 +334,10 @@ internal object BackgroundMonitorHealth {
     @Synchronized fun resetRecoveryAttempts() {
         current = current.copy(recoveryAttemptCount = 0, lastRecoveryElapsed = 0L)
     }
+
+    @Synchronized fun recordRecoveryTrigger(trigger: BackgroundRecoveryTrigger) {
+        current = current.copy(lastRecoveryTrigger = trigger)
+    }
 }
 
 internal val BackgroundServiceState.displayLabel: String
@@ -366,4 +376,14 @@ internal val BackgroundNetworkState.displayLabel: String
         BackgroundNetworkState.NETWORK_AVAILABLE -> "系统报告网络可用"
         BackgroundNetworkState.NETWORK_CHANGED -> "网络正在变化"
         BackgroundNetworkState.UNKNOWN -> "网络状态未知"
+    }
+
+internal val BackgroundRecoveryTrigger.displayLabel: String
+    get() = when (this) {
+        BackgroundRecoveryTrigger.NONE -> "暂无"
+        BackgroundRecoveryTrigger.USER_REQUEST -> "用户主动开启"
+        BackgroundRecoveryTrigger.APP_FOREGROUND -> "用户打开应用后检查"
+        BackgroundRecoveryTrigger.BOOT_COMPLETED -> "设备启动广播"
+        BackgroundRecoveryTrigger.PACKAGE_REPLACED -> "应用升级广播"
+        BackgroundRecoveryTrigger.SYSTEM_STICKY_RESTART -> "Android START_STICKY 恢复"
     }
