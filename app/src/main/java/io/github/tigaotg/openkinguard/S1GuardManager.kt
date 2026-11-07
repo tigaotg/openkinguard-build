@@ -20,6 +20,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.SocketException
 import java.net.Socket
 import java.util.Base64
 import java.util.UUID
@@ -101,6 +102,10 @@ class S1GuardManager(context: Context) {
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var ownServiceName = "OKG-" + UUID.randomUUID().toString().take(12)
     @Volatile private var listener: ServerSocket? = null
+    @Volatile private var listenerAcceptThread: Thread? = null
+    @Volatile private var listenerLoopRunning = false
+    @Volatile private var listenerUnexpectedlyClosed = false
+    @Volatile private var listenerFailureCode: String? = null
     @Volatile private var changed: (() -> Unit)? = null
     @Volatile private var discoveryError = ""
     @Volatile private var lanPairingAddress: String? = null
@@ -1710,41 +1715,110 @@ class S1GuardManager(context: Context) {
         }
     }
 
+    /** Reports the actual bound socket and accept-loop thread, not a scheduler heartbeat. */
+    @Synchronized fun tcpListenerHealth(): BackgroundTcpListenerState {
+        val server = listener
+        if (listenerUnexpectedlyClosed) return BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY
+        if (server == null) return if (listenerFailureCode == "TCP_BIND_FAILED")
+            BackgroundTcpListenerState.FAILED else BackgroundTcpListenerState.NOT_STARTED
+        if (server.isClosed) return BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY
+        if (!server.isBound) return BackgroundTcpListenerState.BINDING
+        val thread = listenerAcceptThread ?: return BackgroundTcpListenerState.BINDING
+        if (thread.state == Thread.State.NEW) return BackgroundTcpListenerState.BINDING
+        return if (thread.isAlive && listenerLoopRunning)
+            BackgroundTcpListenerState.LISTENING
+        else BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY
+    }
+
     @Synchronized fun start(onChange: () -> Unit) {
         changed = onChange
-        if (listener?.isClosed == false) return
+        val current = listener
+        val currentThread = listenerAcceptThread
+        if (current != null && !current.isClosed && current.isBound &&
+            !listenerUnexpectedlyClosed && currentThread != null &&
+            currentThread.state != Thread.State.TERMINATED) return
+
+        // A dead accept loop must not leave an apparently bound but unusable socket behind.
+        runCatching { current?.close() }
+        listener = null
+        listenerAcceptThread = null
+        listenerLoopRunning = false
+        listenerUnexpectedlyClosed = false
+        listenerFailureCode = null
+        inboundWorkers?.shutdownNow()
+        inboundWorkers = null
+
         val server = ServerSocket()
-        server.reuseAddress = true
-        server.bind(InetSocketAddress(InetAddress.getByAddress(byteArrayOf(0, 0, 0, 0)),
-            LanTestWire.PORT))
+        try {
+            server.reuseAddress = true
+            server.bind(InetSocketAddress(
+                InetAddress.getByAddress(byteArrayOf(0, 0, 0, 0)), LanTestWire.PORT))
+        } catch (error: Exception) {
+            listenerFailureCode = "TCP_BIND_FAILED"
+            runCatching { server.close() }
+            throw error
+        }
         listener = server
         val workers = ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue(32), { task ->
                 Thread(task, "okg-s1-client").apply { isDaemon = true }
             }, ThreadPoolExecutor.AbortPolicy())
         inboundWorkers = workers
-        Thread({
-            while (!server.isClosed) {
-                try {
-                    val socket = server.accept()
+        val acceptThread = Thread({
+            listenerLoopRunning = true
+            try {
+                while (!server.isClosed) {
                     try {
-                        workers.execute {
-                            socket.use {
-                                try { processInbound(it); signal() }
-                                catch (error: Exception) {
-                                    // Local diagnostics only; do not send untrusted error details.
-                                    diagnostic("收到连接但未认证", error.message ?: error.javaClass.simpleName)
+                        val socket = server.accept()
+                        try {
+                            workers.execute {
+                                socket.use {
+                                    try { processInbound(it); signal() }
+                                    catch (error: Exception) {
+                                        // Local diagnostics only; do not send untrusted error details.
+                                        diagnostic("收到连接但未认证",
+                                            error.message ?: error.javaClass.simpleName)
+                                    }
                                 }
                             }
+                        } catch (_: java.util.concurrent.RejectedExecutionException) {
+                            socket.close()
+                            diagnostic("局域网连接拥堵", "过多连接，已拒绝新的未认证请求")
                         }
-                    } catch (_: java.util.concurrent.RejectedExecutionException) {
-                        socket.close()
-                        diagnostic("局域网连接拥堵", "过多连接，已拒绝新的未认证请求")
+                    } catch (error: SocketException) {
+                        if (!server.isClosed) {
+                            listenerUnexpectedlyClosed = true
+                            listenerFailureCode = "TCP_ACCEPT_SOCKET_EXCEPTION"
+                            runCatching { server.close() }
+                        }
+                        break
+                    } catch (_: Exception) {
+                        if (server.isClosed) break
+                        // A malformed connection cannot stop the listener.
                     }
-                } catch (_: java.net.SocketException) { break }
-                catch (_: Exception) { /* A malformed connection cannot stop the listener. */ }
+                }
+            } finally {
+                listenerLoopRunning = false
+                if (!server.isClosed && listener === server) {
+                    listenerUnexpectedlyClosed = true
+                    listenerFailureCode = listenerFailureCode ?: "TCP_ACCEPT_LOOP_EXITED"
+                    runCatching { server.close() }
+                }
             }
-        }, "okg-s1-inbound").apply { isDaemon = true; start() }
+        }, "okg-s1-inbound").apply { isDaemon = true }
+        listenerAcceptThread = acceptThread
+        try {
+            acceptThread.start()
+        } catch (error: Exception) {
+            listenerFailureCode = "TCP_ACCEPT_THREAD_START_FAILED"
+            listenerUnexpectedlyClosed = true
+            runCatching { server.close() }
+            workers.shutdownNow()
+            listener = null
+            listenerAcceptThread = null
+            inboundWorkers = null
+            throw error
+        }
         beginDiscovery()
         val setting = store.snapshot()
         remotePairing.resume()
@@ -1768,6 +1842,10 @@ class S1GuardManager(context: Context) {
         relayVerifiedAt.clear()
         listener?.close()
         listener = null
+        listenerAcceptThread = null
+        listenerLoopRunning = false
+        listenerUnexpectedlyClosed = false
+        listenerFailureCode = null
         inboundWorkers?.shutdownNow()
         inboundWorkers = null
         advertiseRefreshPending = false
