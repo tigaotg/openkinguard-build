@@ -70,7 +70,8 @@ class S1GuardManager(context: Context) {
     private val gps = S3GpsCapture(app)
     private val relay = S2RelayPool(app, keys, { signal() }, { forwardRelayInbound(it) },
         { slot, sender, signed -> receiveFamilyPairing(slot, sender, signed) },
-        { slot, sender, session -> receiveFamilyPairingCancel(slot, sender, session) })
+        { slot, sender, session -> receiveFamilyPairingCancel(slot, sender, session) },
+        { frame -> handleLateRelayReply(frame) })
     private val publicNostr = S2NostrTransport(app, keys, pairings, { signal() })
     private val remotePairing = RemotePairingManager(app, keys, pairings, publicNostr,
         { signal() })
@@ -2453,6 +2454,39 @@ class S1GuardManager(context: Context) {
         val aad = S4MessageWire.associatedData(envelope.relationId, message)
         val plaintext = publicNostr.openCasePayload(envelope.sealed, aad)
         return S1CaseWire.bodyDecrypted(message, plaintext)
+    }
+
+    /** Correlates delayed signed device receipts with the persisted ciphertext outbox. */
+    private fun handleLateRelayReply(frame: ByteArray) {
+        val reply = runCatching { LanTestWire.decode(frame) }.getOrNull() ?: return
+        val requestKind = when (reply.message.payloadKind) {
+            S1CaseWire.RECEIPT -> S1CaseWire.SOS
+            S1CaseWire.CHECKIN_RECEIPT -> S1CaseWire.CHECKIN
+            S1CaseWire.CLOSED -> S1CaseWire.CLOSE
+            else -> return
+        }
+        val route = runCatching { S1CaseWire.body(reply.message) }.getOrNull() ?: return
+        val peer = pairings.snapshot().peers.singleOrNull {
+            it.active && it.relationId == route.relationId &&
+                reply.message.senderDeviceId.value == "okg-" + it.peerFingerprint
+        } ?: return
+        val entry = store.snapshot().deliveryOutbox.firstOrNull {
+            it.eventId == reply.message.eventId.value &&
+                it.relationId == peer.relationId &&
+                it.peerFingerprint == peer.peerFingerprint &&
+                it.payloadKind == requestKind
+        } ?: return
+        runCatching {
+            verifyReply(reply, peer, requestKind, entry.eventId, entry.messageId,
+                entry.relayAcceptedAt)
+        }.onSuccess {
+            relayVerifiedAt[peer.relationId] = System.currentTimeMillis()
+            store.recordHandshake("延迟送达回执", requestKind, peer.relationId, "成功",
+                "已验签并关联原始离线消息 " + entry.messageId.take(12))
+            signal()
+        }.onFailure { error ->
+            diagnostic("延迟签名回执", error.message ?: error.javaClass.simpleName)
+        }
     }
 
     private data class SendResult(val bytes: ByteArray, val viaRelay: Boolean,

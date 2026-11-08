@@ -46,6 +46,7 @@ internal class S2RelayPool(
     acceptInbound: (ByteArray) -> ByteArray,
     acceptPairing: (Int, String, String) -> Boolean,
     acceptPairingCancel: (Int, String, String) -> Unit,
+    acceptAsyncReply: (ByteArray) -> Unit = {},
 ) {
     private val connectivity = context.applicationContext.getSystemService(
         Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -79,7 +80,8 @@ internal class S2RelayPool(
     private val slots = List(3) { index ->
         S2RelayClient(keys, onChanged, acceptInbound,
             { sender, signed -> acceptPairing(index, sender, signed) },
-            { sender, session -> acceptPairingCancel(index, sender, session) })
+            { sender, session -> acceptPairingCancel(index, sender, session) },
+            acceptAsyncReply)
     }
     @Volatile private var endpoints: List<String> = emptyList()
 

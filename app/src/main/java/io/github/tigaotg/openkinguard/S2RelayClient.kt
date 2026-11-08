@@ -32,6 +32,7 @@ internal class S2RelayClient(
     private val acceptInbound: (ByteArray) -> ByteArray,
     private val acceptPairing: (String, String) -> Boolean,
     private val acceptPairingCancel: (String, String) -> Unit,
+    private val acceptAsyncReply: (ByteArray) -> Unit = {},
 ) {
     private val defaultClient = OkHttpClient.Builder().pingInterval(25, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS).build()
@@ -233,7 +234,15 @@ internal class S2RelayClient(
                             val id = json.getString("id")
                             val bytes = unb64(json.getString("data"))
                             require(bytes.size in 100..8192)
-                            pending.remove(id)?.complete(bytes)
+                            val waiter = pending.remove(id)
+                            if (waiter != null) waiter.complete(bytes)
+                            else {
+                                // A relay may return a signed device ACK after the short request
+                                // future timed out. Let the durable outbox correlate it by message ID.
+                                runCatching {
+                                    inbound.execute { runCatching { acceptAsyncReply(bytes) } }
+                                }
+                            }
                         }
                         "error" -> {
                             val code = json.optString("code")
