@@ -135,7 +135,6 @@ internal class S2RelayClient(
                 try {
                     if (text.length > 24_000) throw IOException("中继消息过长")
                     val json = JSONObject(text)
-                    lastCommunicationAtMillis = System.currentTimeMillis()
                     when (json.getString("t")) {
                         "challenge" -> {
                             val nonce = unb64(json.getString("n"))
@@ -257,6 +256,9 @@ internal class S2RelayClient(
                             ?.completeExceptionally(RelayQueuedException())
                         else -> throw IOException("未知中继消息")
                     }
+                    // Only a recognized, structurally valid relay frame advances
+                    // the last-communication diagnostic; WebSocket open alone does not.
+                    lastCommunicationAtMillis = System.currentTimeMillis()
                 } catch (error: Exception) {
                     status = "中继协议错误：${error.message ?: "格式无效"}"
                     onChanged()

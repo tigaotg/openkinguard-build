@@ -348,21 +348,21 @@ internal class S2NostrTransport(
                         ws.close(1000, "stale"); return
                     }
                     slot.live = true
-                    slot.lastFailureReason = null
                     slot.inboxSubscribed = false
                     slot.cardAccepted = false
                     slot.blocked = false
                     slot.cardEventId = null
-                    slot.reconnectAttempt = 0
                     slot.message = "WebSocket已连接，等待节点确认订阅与身份公告"
                     onChanged()
                     runCatching {
                         subscribe(ws)
                         publishCard(slot, ws)
                     }.onFailure { error ->
-                        slot.blocked = true
-                        slot.message = "订阅或公告发送失败：${error.message.orEmpty().take(60)}"
-                        onChanged()
+                        // A transient initial-send failure must enter capped backoff
+                        // instead of stranding a live-but-blocked WebSocket.
+                        ws.cancel()
+                        disconnected(slot, ws,
+                            error.message ?: "订阅或身份公告发送失败")
                     }
                     // Never leave a silent WSS-only connection labelled as usable.
                     reconnect.schedule({
@@ -378,7 +378,6 @@ internal class S2NostrTransport(
                         slot.socket !== ws) return
                     try {
                         val message = JSONArray(text)
-                        slot.lastCommunicationAtMillis = System.currentTimeMillis()
                         when (message.getString(0)) {
                             "EVENT" -> {
                                 val event = message.getJSONObject(2)
@@ -420,7 +419,9 @@ internal class S2NostrTransport(
                                     onChanged()
                                 }
                             }
+                            else -> return
                         }
+                        slot.lastCommunicationAtMillis = System.currentTimeMillis()
                     } catch (_: Exception) {
                         // External relay content is untrusted; one bad frame is not a disconnect.
                     }
@@ -464,6 +465,12 @@ internal class S2NostrTransport(
             slot.inboxSubscribed -> "收件订阅已确认，等待本机身份公告被接受"
             slot.cardAccepted -> "身份公告已接受，等待收件订阅确认"
             else -> "WebSocket已连接，等待节点确认订阅与身份公告"
+        }
+        if (slot.ready) {
+            // Reset exponential backoff only after EOSE and the signed identity
+            // announcement are both accepted, not merely after WebSocket open.
+            slot.reconnectAttempt = 0
+            slot.lastFailureReason = null
         }
         onChanged()
         if (slot.ready) directReady?.invoke()
