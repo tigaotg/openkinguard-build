@@ -2890,25 +2890,31 @@ class S1GuardManager(context: Context) {
     }
 
     private fun verifyReply(reply: SignedEnvelope, peer: SavedPeer, requestKind: String,
-                            eventId: String, expectedRequestMessageId: String) {
+                            eventId: String, expectedRequestMessageId: String? = null) {
         val own = keys.createOrLoad().fingerprint
         store.update { state ->
             val admitted = admit(reply, peer, own, state)
                 ?: throw IllegalArgumentException("重复的签名回执")
             val kind = reply.message.payloadKind
-            val body = if (requestKind == LanTestWire.PING) {
-                val info = LanTestWire.body(reply.message)
-                require(kind == LanTestWire.ACK && info.relationId == peer.relationId &&
-                    info.acknowledgedMessageId == expectedRequestMessageId) { "签名心跳回执不匹配" }
-                null
-            } else {
-                require(kind in S1CaseWire.expectedResponse(requestKind)) { "回执步骤不匹配" }
-                val info = decryptCaseBody(reply, peer)
-                require(info.eventId == eventId && info.relationId == peer.relationId &&
-                    info.respondingTo == expectedRequestMessageId) {
-                    "签名回执与原始消息、关系或事件不匹配"
+            val body = when {
+                requestKind == LanTestWire.PING -> {
+                    val expected = requireNotNull(expectedRequestMessageId)
+                    val info = LanTestWire.body(reply.message)
+                    require(kind == LanTestWire.ACK && info.relationId == peer.relationId &&
+                        info.acknowledgedMessageId == expected) { "签名心跳回执不匹配" }
+                    null
                 }
-                info
+                requestKind in S1CaseWire.requestKinds -> {
+                    val expected = requireNotNull(expectedRequestMessageId)
+                    require(kind in S1CaseWire.expectedResponse(requestKind)) { "回执步骤不匹配" }
+                    val info = decryptCaseBody(reply, peer)
+                    require(info.eventId == eventId && info.relationId == peer.relationId &&
+                        info.respondingTo == expected) {
+                        "签名回执与原始消息、关系或事件不匹配"
+                    }
+                    info
+                }
+                else -> null // Remote-assist and location callers validate their own typed bodies.
             }
             var updated = state.copy(replay = state.replay +
                 (peer.relationId + "|" + peer.peerFingerprint to admitted),
