@@ -4,7 +4,8 @@
 The relay knows connected device public-key fingerprints, not family relations.
 It cannot forge signed OpenKinGuard application messages. When expressly
 requested, it temporarily buffers a bounded number of offline notifications
-in RAM, never on disk. Restarting the process discards this queue.
+in short-lived RAM. Optionally it stores S4 ciphertext frames in a private spool;
+this is never proof of delivery.
 Place behind a TLS reverse proxy (wss://) or pass a TLS certificate directly.
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from websockets.legacy.server import WebSocketServerProtocol as ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from enrollment import EnrollmentStore, clean_device_label
+from offline_queue import OfflineQueueStore, encrypted_case_id
 
 
 class RelayNotAuthorized(ValueError):
@@ -82,12 +84,15 @@ class Queued:
     data: str
     expires_at: float
     inflight: bool = False
+    sender_request_id: str = ""
+    logical_id: str | None = None
 
 
 class Relay:
     def __init__(self, allowed: set[str], max_clients: int = 16,
                  rate_kbps: int = 25_000,
-                 enrollment: EnrollmentStore | None = None) -> None:
+                 enrollment: EnrollmentStore | None = None,
+                 queue_dir: str | None = None) -> None:
         if (not allowed and enrollment is None) or not all(
             FINGERPRINT.fullmatch(fp) for fp in allowed
         ):
@@ -105,8 +110,11 @@ class Relay:
         self.send_lock = asyncio.Lock()
         self.clients: dict[str, ServerConnection] = {}
         self.waiting: dict[str, Pending] = {}
-        self.offline: list[Queued] = []
+        self.queue_store = OfflineQueueStore(queue_dir) if queue_dir else None
+        self.offline: list[Queued] = ([Queued(**value) for value in self.queue_store.load()]
+                                      if self.queue_store else [])
         self.request_times: dict[str, deque[float]] = {}
+        self.prune_offline()
 
     async def budget_send(self, size: int) -> None:
         """Approximate application egress cap, not an OS-level WAN/SQM shaper."""
@@ -131,25 +139,68 @@ class Relay:
             raise ValueError("per-device request rate exceeded")
         times.append(now)
 
+    def authorized(self, identity: str) -> bool:
+        return identity in self.allowed or bool(
+            self.enrollment and self.enrollment.is_approved(identity))
+
     def prune_offline(self) -> None:
-        now = time.monotonic()
-        self.offline = [item for item in self.offline if item.expires_at > now]
+        now = time.time()
+        keep = []
+        for item in self.offline:
+            if item.expires_at > now and self.authorized(item.sender) and self.authorized(item.recipient):
+                keep.append(item)
+            elif self.queue_store and item.logical_id:
+                self.queue_store.delete(item.request_id)
+        self.offline = keep
 
     def mark_queued_idle(self, request_id: str) -> None:
         for item in self.offline:
             if item.request_id == request_id:
                 item.inflight = False
 
-    async def enqueue(self, sender: str, recipient: str, data: str) -> bool:
+    @staticmethod
+    def store_record(item: Queued) -> dict:
+        return {"request_id": item.request_id, "sender": item.sender,
+                "recipient": item.recipient, "data": item.data,
+                "expires_at": item.expires_at, "sender_request_id": item.sender_request_id,
+                "logical_id": item.logical_id}
+
+    async def enqueue(self, sender: str, recipient: str, data: str,
+                      original_id: str = "") -> bool:
         self.prune_offline()
+        logical_id = encrypted_case_id(data, sender, recipient)
+        if logical_id:
+            for index, old in enumerate(self.offline):
+                if old.sender == sender and old.recipient == recipient and old.logical_id == logical_id:
+                    # Same logical event, re-signed by APP: keep original expiry.
+                    replacement = Queued(old.request_id, sender, recipient,
+                        old.data if old.inflight else data, old.expires_at,
+                        old.inflight, original_id or old.sender_request_id, logical_id)
+                    if self.queue_store:
+                        try:
+                            self.queue_store.save(self.store_record(replacement))
+                        except (OSError, ValueError) as exc:
+                            LOG.warning("Offline spool write failed: %s", exc)
+                            return False
+                    self.offline[index] = replacement
+                    return True
         if len(self.offline) >= MAX_QUEUED_TOTAL or sum(
             item.recipient == recipient for item in self.offline
         ) >= MAX_QUEUED_PER_RECIPIENT or sum(
             item.sender == sender for item in self.offline
         ) >= MAX_QUEUED_PER_SENDER:
             return False
-        self.offline.append(Queued("queued-" + secrets.token_hex(16), sender,
-                                   recipient, data, time.monotonic() + OFFLINE_TTL_SECONDS))
+        item = Queued("queued-" + secrets.token_hex(16), sender, recipient,
+                      data, time.time() + OFFLINE_TTL_SECONDS,
+                      sender_request_id=original_id, logical_id=logical_id)
+        # Legacy frames remain RAM-only; no plain case content is stored.
+        if self.queue_store and logical_id:
+            try:
+                self.queue_store.save(self.store_record(item))
+            except (OSError, ValueError) as exc:
+                LOG.warning("Offline spool write failed: %s", exc)
+                return False
+        self.offline.append(item)
         return True
 
     async def flush_offline(self, recipient: str) -> None:
@@ -283,7 +334,7 @@ class Relay:
                 # field and must never be delivered to an offline device:
                 # consent and safety-code review require a live exchange.
                 if kind == "req" and payload.get("queue") is True:
-                    accepted = await self.enqueue(identity, recipient, payload["data"])
+                    accepted = await self.enqueue(identity, recipient, payload["data"], request_id)
                     await self.send(identity, {"t": "queued" if accepted else "error",
                                                "id": request_id,
                                                **({} if accepted else {"code": "queue_full"})})
@@ -325,8 +376,17 @@ class Relay:
                 response = {"t": "error", "id": request_id, "code": code}
             self.waiting.pop(request_id, None)
             if pending.queued:
+                item = next((item for item in self.offline
+                             if item.request_id == request_id), None)
+                if item and self.queue_store and item.logical_id:
+                    self.queue_store.delete(item.request_id)
                 self.offline = [item for item in self.offline
                                 if item.request_id != request_id]
+                # A queued response arrives after the short request future.
+                # The sender's APP authenticates this signed device receipt.
+                if item and item.sender_request_id:
+                    await self.send(pending.sender, {
+                        **response, "id": item.sender_request_id})
             else:
                 await self.send(pending.sender, response)
             # A response freed one recipient slot; send the next queued item, if any.
@@ -431,7 +491,8 @@ class Relay:
 async def run(host: str, port: int, tls_cert: str | None, tls_key: str | None,
               allowed: set[str], max_clients: int, rate_kbps: int,
               drop_user: str | None,
-              enrollment_dir: str | None = None) -> None:
+              enrollment_dir: str | None = None,
+              queue_dir: str | None = None) -> None:
     context = None
     if tls_cert and tls_key:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -441,7 +502,7 @@ async def run(host: str, port: int, tls_cert: str | None, tls_key: str | None,
         raise ValueError("Plain WS must bind to loopback; use --cert/--key or a local TLS reverse proxy")
     enrollment = EnrollmentStore(enrollment_dir) if enrollment_dir else None
     relay = Relay(allowed, max_clients=max_clients, rate_kbps=rate_kbps,
-                  enrollment=enrollment)
+                  enrollment=enrollment, queue_dir=queue_dir)
     # Read TLS private key while privileged, then drop rights before accepting
     # any network connections. Failure to change UID is fatal.
     if drop_user and os.geteuid() == 0:
@@ -469,6 +530,8 @@ def main() -> None:
     parser.add_argument("--drop-user", default="nobody")
     parser.add_argument("--enrollment-dir", default=None,
                         help="Optional private tmpfs directory for owner-approved QR joining")
+    parser.add_argument("--queue-dir", default=None,
+                        help="Private 0700 directory for 5-minute S4 ciphertext spool")
     args = parser.parse_args()
     if bool(args.cert) != bool(args.key):
         parser.error("--cert and --key must be specified together")
@@ -481,7 +544,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     asyncio.run(run(args.listen, args.port, args.cert, args.key, set(args.allow),
                     args.max_clients, args.rate_kbps, args.drop_user,
-                    args.enrollment_dir))
+                    args.enrollment_dir, args.queue_dir))
 
 
 if __name__ == "__main__":

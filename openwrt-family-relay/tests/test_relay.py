@@ -249,6 +249,25 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConnectionClosed):
             await a.recv()
 
+    async def test_queued_phone_receipt_returns_to_original_sender(self):
+        sender, _, _ = await self.device()
+        receiver_key = ec.generate_private_key(ec.SECP256R1())
+        der = receiver_key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        receiver_id = hashlib.sha256(der).hexdigest()
+        self.relay.allowed = frozenset(set(self.relay.allowed) | {receiver_id})
+        frame = enc(b"S" * 160)
+        await sender.send(json.dumps({"t": "req", "id": "original-ack-1",
+            "to": receiver_id, "data": frame, "queue": True}))
+        self.assertEqual(json.loads(await sender.recv())["t"], "queued")
+        receiver, _, _ = await self.device(receiver_key)
+        forwarded = json.loads(await receiver.recv())
+        self.assertTrue(forwarded["id"].startswith("queued-"))
+        await receiver.send(json.dumps({"t": "reply",
+            "id": forwarded["id"], "data": frame}))
+        self.assertEqual(json.loads(await sender.recv()),
+            {"t": "reply", "id": "original-ack-1", "data": frame})
+
     async def test_bounded_offline_queue_waits_for_authenticated_recipient(self):
         a, a_id, _ = await self.device()
         future_b = ec.generate_private_key(ec.SECP256R1())

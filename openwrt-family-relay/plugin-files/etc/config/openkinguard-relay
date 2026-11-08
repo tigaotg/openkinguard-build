@@ -6,5 +6,7 @@ config relay 'main'
 	option key '/etc/ssl/openkinguard/privkey.pem'
 	option max_clients '16'
 	option rate_kbps '25000'
+	# memory=仅运行内存；tmpfs=服务重启保留、断电丢失；flash=断电保留但有闪存写入
+	option queue_storage 'tmpfs'
 	# 通过 LuCI 的一次性二维码申请、由管理员批准后自动加入允许列表。
 	# 空白白名单只允许提交待批准申请，不能转发应用业务消息。

@@ -53,6 +53,8 @@ case "${1:---check}" in
 			/usr/lib/openkinguard-relay/VERSION 0644
 		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/relay.py" \
 			/usr/lib/openkinguard-relay/relay.py 0644
+		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/offline_queue.py" \
+			/usr/lib/openkinguard-relay/offline_queue.py 0644
 		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/node_identity.py" \
 			/usr/lib/openkinguard-relay/node_identity.py 0755
 		install_file "$SOURCE_DIR/usr/lib/openkinguard-relay/enrollment.py" \
