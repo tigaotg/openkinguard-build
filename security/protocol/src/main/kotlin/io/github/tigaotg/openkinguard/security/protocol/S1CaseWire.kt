@@ -15,11 +15,14 @@ object S1CaseWire {
     const val CLOSED = "OKG_S1_TEST_CLOSED_V1"
     const val CHECKIN = "OKG_S1_CHECKIN_V1"
     const val CHECKIN_RECEIPT = "OKG_S1_CHECKIN_RECEIPT_V1"
+    const val CHECKIN_CONFIRM = "OKG_S1_CHECKIN_CONFIRM_V1"
+    const val CHECKIN_CONFIRM_RECEIPT = "OKG_S1_CHECKIN_CONFIRM_RECEIPT_V1"
     const val PROFILE = "OKG_S1_PROFILE_V1"
     const val PROFILE_REPLY = "OKG_S1_PROFILE_REPLY_V1"
 
-    val requestKinds = setOf(SOS, CLAIM, CLOSE, CHECKIN, PROFILE)
-    val responseKinds = setOf(RECEIPT, ACCEPT, REJECT, CLOSED, CHECKIN_RECEIPT, PROFILE_REPLY)
+    val requestKinds = setOf(SOS, CLAIM, CLOSE, CHECKIN, CHECKIN_CONFIRM, PROFILE)
+    val responseKinds = setOf(RECEIPT, ACCEPT, REJECT, CLOSED, CHECKIN_RECEIPT,
+        CHECKIN_CONFIRM_RECEIPT, PROFILE_REPLY)
     /** No plaintext compatibility path exists for business commands or receipts. */
     val encryptedKinds = (requestKinds + responseKinds) - setOf(PROFILE, PROFILE_REPLY)
 
@@ -104,7 +107,7 @@ object S1CaseWire {
         require(!request || when (message.payloadKind) {
             SOS, CHECKIN -> fields.size in 3..5 &&
                 (fields.size < 5 || fields[4].startsWith("N:"))
-            CLAIM, CLOSE -> fields.size == 3 ||
+            CLAIM, CLOSE, CHECKIN_CONFIRM -> fields.size == 3 ||
                 (fields.size == 4 && fields[3].startsWith("N:"))
             PROFILE -> fields.size == 3 ||
                 (fields.size == 4 && fields[3].startsWith("K:"))
@@ -150,6 +153,7 @@ object S1CaseWire {
         CLAIM -> setOf(ACCEPT, REJECT)
         CLOSE -> setOf(CLOSED)
         CHECKIN -> setOf(CHECKIN_RECEIPT)
+        CHECKIN_CONFIRM -> setOf(CHECKIN_CONFIRM_RECEIPT)
         PROFILE -> setOf(PROFILE_REPLY)
         else -> emptySet()
     }

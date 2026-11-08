@@ -79,6 +79,8 @@ class S1CaseWireTest {
         assertTrue(S1CaseWire.expectedResponse(S1CaseWire.RECEIPT).isEmpty())
         assertEquals(setOf(S1CaseWire.CHECKIN_RECEIPT),
             S1CaseWire.expectedResponse(S1CaseWire.CHECKIN))
+        assertEquals(setOf(S1CaseWire.CHECKIN_CONFIRM_RECEIPT),
+            S1CaseWire.expectedResponse(S1CaseWire.CHECKIN_CONFIRM))
         assertEquals(setOf(S1CaseWire.PROFILE_REPLY),
             S1CaseWire.expectedResponse(S1CaseWire.PROFILE))
     }
@@ -114,6 +116,20 @@ class S1CaseWireTest {
             S1CaseWire.bodyDecrypted(returned.message, receiptPlain).respondingTo)
         assertEquals(setOf(returned.message.payloadKind),
             S1CaseWire.expectedResponse(sent.message.payloadKind))
+    }
+
+    @Test fun checkinFamilyConfirmationIsEncryptedAndCorrelated() {
+        val plain = S1CaseWire.request(relation, event, senderNickname = "家属手机")
+        val message = wire(S1CaseWire.CHECKIN_CONFIRM, plain)
+        assertEquals(relation, S1CaseWire.body(message).relationId)
+        val parsed = S1CaseWire.bodyDecrypted(message, plain)
+        assertEquals(event, parsed.eventId)
+        assertEquals("家属手机", parsed.senderNickname)
+        val receiptPlain = S1CaseWire.response(relation, event, messageId)
+        val receipt = decoded(S1CaseWire.CHECKIN_CONFIRM_RECEIPT, receiptPlain)
+        assertEquals(messageId, receipt.respondingTo)
+        assertEquals(setOf(S1CaseWire.CHECKIN_CONFIRM_RECEIPT),
+            S1CaseWire.expectedResponse(S1CaseWire.CHECKIN_CONFIRM))
     }
 
     @Test fun profileExchangeCarriesSignedEncryptionCard() {

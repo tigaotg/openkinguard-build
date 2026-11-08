@@ -463,7 +463,8 @@ internal class S1CaseStore(context: Context) {
                 require(entry.relationId.length == 36 &&
                     UUID.fromString(entry.relationId).toString() == entry.relationId)
                 require(entry.peerFingerprint.matches(Regex("[0-9a-f]{64}")))
-                require(entry.payloadKind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN, S1CaseWire.CLOSE))
+                require(entry.payloadKind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN,
+                    S1CaseWire.CLOSE, S1CaseWire.CHECKIN_CONFIRM))
                 require(entry.expiresAt > now && entry.expiresAt > entry.createdAt &&
                     entry.expiresAt <= entry.createdAt + S4DeliveryPolicy.MESSAGE_TTL_MILLIS + 60_000L)
                 require(entry.frameBase64.length in 100..11_000)
