@@ -102,10 +102,10 @@ internal fun ConnectionHistoryPanel() {
                 style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(onClick = {
-                    daysBack = (daysBack + 1).coerceAtMost(6)
+                    daysBack = (daysBack + 1).coerceAtMost(7)
                     pageIndex = 0
-                }, enabled = daysBack < 6) { Text("前一天") }
-                Text(if (daysBack == 0) "今天" else "$daysBack 天前",
+                }, enabled = daysBack < 7) { Text("前一天") }
+                Text(if (daysBack == 0) "今天" else if (daysBack == 7) "7天前（部分）" else "$daysBack 天前",
                     modifier = Modifier.padding(top = 10.dp))
                 OutlinedButton(onClick = {
                     daysBack = (daysBack - 1).coerceAtLeast(0)
