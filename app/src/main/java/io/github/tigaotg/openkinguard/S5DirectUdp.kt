@@ -77,6 +77,7 @@ internal class S5DirectUdp(
     @Volatile private var generation = 0L
     private var socketRetryAttempt = 0
     private var socketRetryFuture: ScheduledFuture<*>? = null
+    private var gatherFuture: ScheduledFuture<*>? = null
 
     data class DirectReply(val bytes: ByteArray, val endpoint: InetSocketAddress)
     private data class Pending(val fingerprint: String, val expiration: Long,
@@ -199,6 +200,8 @@ internal class S5DirectUdp(
 
     private fun releaseTransport(reason: String) {
         generation++
+        gatherFuture?.cancel(false)
+        gatherFuture = null
         socket?.close()
         socket = null
         boundNetwork = null
@@ -389,10 +392,12 @@ internal class S5DirectUdp(
     }
 
     private fun scheduleGather(current: Long, delaySeconds: Long) {
-        scheduler.schedule({
+        gatherFuture?.cancel(false)
+        gatherFuture = scheduler.schedule({
             if (current != generation || !active) return@schedule
             runCatching { gather(current) }.onFailure {
-                lastDiagnostic = "公网候选采集失败：${it.javaClass.simpleName}"
+                lastDiagnostic = "公网候选采集失败：" + it.javaClass.simpleName
+                lastFailureReason = it.message ?: it.javaClass.simpleName
                 onChanged()
             }
             if (current == generation && active) scheduleGather(current, 60)
