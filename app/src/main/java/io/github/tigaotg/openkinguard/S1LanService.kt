@@ -411,9 +411,16 @@ class S1LanService : Service() {
         }.onFailure {
             Log.w("OpenKinGuard", "Cannot acquire bounded heartbeat wakelock", it)
         }.getOrNull()
+        val wakeLockCompletion = BackgroundTickWakeLockCompletion()
+        var probeCompletionAttached = false
         try {
             val manager = S1Runtime.manager(applicationContext)
-            manager.probeAsync()
+            manager.probeAsync().whenComplete { _, _ ->
+                if (wakeLockCompletion.markProbeFinished()) {
+                    runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+                }
+            }
+            probeCompletionAttached = true
             manager.expireOldIncoming()
             manager.deliverPending()
             if (startedAt - schedulerStartedElapsed >= 60_000L) {
@@ -445,7 +452,12 @@ class S1LanService : Service() {
             BackgroundMonitorHealth.abandonTick(
                 generation, SystemClock.elapsedRealtime()
             )
-            runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+            val probeRelease = if (!probeCompletionAttached)
+                wakeLockCompletion.markProbeFinished() else false
+            val tickRelease = wakeLockCompletion.markTickFinished()
+            if (probeRelease || tickRelease) {
+                runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+            }
             tickInProgress.set(false)
         }
     }

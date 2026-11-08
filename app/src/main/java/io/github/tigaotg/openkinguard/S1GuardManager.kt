@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 import org.json.JSONArray
@@ -95,7 +95,8 @@ class S1GuardManager(context: Context) {
     private val verified = ConcurrentHashMap<String, String>() // relation ID -> mDNS service name
     private val resolveQueue = ConcurrentLinkedQueue<NsdServiceInfo>()
     private val resolving = AtomicBoolean(false)
-    private val probing = AtomicBoolean(false)
+    private val probingLock = Any()
+    @Volatile private var probingCompletion: CompletableFuture<Unit>? = null
     private var browseListener: NsdManager.DiscoveryListener? = null
     private var advertiseListener: NsdManager.RegistrationListener? = null
     private var advertiseRefreshPending = false
@@ -2045,9 +2046,14 @@ class S1GuardManager(context: Context) {
             .toSet()
     }.getOrDefault(emptySet())
 
-    fun probeAsync() {
-        if (listener?.isClosed != false || !probing.compareAndSet(false, true)) return
-        Thread({
+    fun probeAsync(): CompletableFuture<Unit> = synchronized(probingLock) {
+        if (listener?.isClosed != false)
+            return@synchronized CompletableFuture.completedFuture(Unit)
+        probingCompletion?.takeIf { !it.isDone }?.let { return@synchronized it }
+
+        val completion = CompletableFuture<Unit>()
+        probingCompletion = completion
+        val worker = Thread({
             try {
                 val existing = nodes.values.toList()
                 for (peer in relations()) {
@@ -2093,8 +2099,20 @@ class S1GuardManager(context: Context) {
                         }
                     }
                 }
-            } finally { probing.set(false) }
-        }, "okg-s1-verify-discovery").start()
+            } finally {
+                synchronized(probingLock) {
+                    if (probingCompletion === completion) probingCompletion = null
+                }
+                completion.complete(Unit)
+            }
+        }, "okg-s1-verify-discovery").apply { isDaemon = true }
+        try {
+            worker.start()
+        } catch (error: Exception) {
+            probingCompletion = null
+            completion.completeExceptionally(error)
+        }
+        completion
     }
 
     /** Local LAN availability only. This is not proof of a person's safety or danger. */
