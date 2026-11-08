@@ -57,6 +57,10 @@ jobs:
           ./gradlew --no-daemon :core:engine:test \
             --tests io.github.tigaotg.openkinguard.core.engine.S5StunCodecTest \
             --stacktrace
+          ./gradlew --no-daemon :security:protocol:test \
+            --tests io.github.tigaotg.openkinguard.security.protocol.S4MessageWireTest \
+            --tests io.github.tigaotg.openkinguard.security.protocol.S1CaseWireTest \
+            --stacktrace
           ./gradlew --no-daemon \
             :app:compilePilotV4Kotlin \
             :app:testDebugUnitTest \

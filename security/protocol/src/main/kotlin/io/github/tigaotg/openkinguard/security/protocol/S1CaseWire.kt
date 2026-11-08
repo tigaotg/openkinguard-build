@@ -50,7 +50,7 @@ object S1CaseWire {
             eventCreatedAtMillis == null && senderNickname == null) {
             "Encryption cards are only allowed in PROFILE requests"
         }
-        return "R|" + uuid(relationId) + "|" + uuid(eventId) + time + nick + card
+        return ("R|" + uuid(relationId) + "|" + uuid(eventId) + time + nick + card)
             .toByteArray(Charsets.UTF_8)
     }
 
