@@ -157,7 +157,9 @@ internal class S5DirectUdp(
             created.reuseAddress = false
             created.bind(InetSocketAddress(0))
             network.bindSocket(created)
-            created.soTimeout = 1500
+            // close() already interrupts DatagramSocket.receive(); an infinite
+            // receive avoids waking this thread every 1.5 seconds while idle.
+            created.soTimeout = S5DirectMaintenancePolicy.BLOCKING_RECEIVE_TIMEOUT_MILLIS
         } catch (error: Exception) {
             runCatching { created.close() }
             socket = null
@@ -236,8 +238,26 @@ internal class S5DirectUdp(
     }
 
     fun onContact(peer: String) {
-        if (active) scheduler.execute { publishTo(peer, force = true) }
+        if (!active) return
+        val current = generation
+        scheduler.execute {
+            if (current != generation || !active) return@execute
+            // A newly trusted peer needs fresh mapped candidates immediately.
+            runCatching { gather(current, probeStun = true) }.onFailure {
+                lastDiagnostic = "新家人连接候选采集失败：" + it.javaClass.simpleName
+                lastFailureReason = it.message ?: it.javaClass.simpleName
+                onChanged()
+            }
+            if (current == generation && active) {
+                publishTo(peer, force = true)
+                scheduleGather(current,
+                    S5DirectMaintenancePolicy.plan(activePeerCount()).refreshIntervalSeconds)
+            }
+        }
     }
+
+    private fun activePeerCount(): Int =
+        pairings.snapshot().peers.count { it.active }
 
     fun onSignalReady() {
         if (active) scheduler.execute { publishAll() }
@@ -429,16 +449,20 @@ internal class S5DirectUdp(
         gatherFuture?.cancel(false)
         gatherFuture = scheduler.schedule({
             if (current != generation || !active) return@schedule
-            runCatching { gather(current) }.onFailure {
+            val plan = S5DirectMaintenancePolicy.plan(activePeerCount())
+            runCatching { gather(current, probeStun = plan.probeStun) }.onFailure {
                 lastDiagnostic = "公网候选采集失败：" + it.javaClass.simpleName
                 lastFailureReason = it.message ?: it.javaClass.simpleName
                 onChanged()
             }
-            if (current == generation && active) scheduleGather(current, 60)
+            if (current == generation && active) {
+                val next = S5DirectMaintenancePolicy.plan(activePeerCount())
+                scheduleGather(current, next.refreshIntervalSeconds)
+            }
         }, delaySeconds, TimeUnit.SECONDS)
     }
 
-    private fun gather(current: Long) {
+    private fun gather(current: Long, probeStun: Boolean) {
         val live = socket ?: return
         val network = boundNetwork ?: return
         val expiry = System.currentTimeMillis() + 110_000L
@@ -459,52 +483,62 @@ internal class S5DirectUdp(
                 }
         }
 
-        // Probe both address families when a STUN host publishes A and AAAA records.
-        // Send all requests first, then collect them within one bounded window.
-        val targets = listOf("stun.miwifi.com", "stun.hitv.com", "stun.qq.com")
-            .flatMap { domain ->
-                runCatching { InetAddress.getAllByName(domain).toList() }
-                    .getOrDefault(emptyList())
-                    .let { addresses ->
-                        listOfNotNull(
-                            addresses.firstOrNull { it is Inet4Address },
-                            addresses.firstOrNull { it is Inet6Address }
-                        ).map { InetSocketAddress(it, 3478) }
-                    }
-            }.distinctBy { it.address to it.port }.take(6)
+        if (probeStun) {
+            // Probe both address families only while at least one trusted peer exists.
+            // This avoids periodic DNS/STUN traffic when nobody can use the candidates.
+            val targets = listOf("stun.miwifi.com", "stun.hitv.com", "stun.qq.com")
+                .flatMap { domain ->
+                    runCatching { InetAddress.getAllByName(domain).toList() }
+                        .getOrDefault(emptyList())
+                        .let { addresses ->
+                            listOfNotNull(
+                                addresses.firstOrNull { it is Inet4Address },
+                                addresses.firstOrNull { it is Inet6Address }
+                            ).map { InetSocketAddress(it, 3478) }
+                        }
+                }.distinctBy { it.address to it.port }.take(6)
 
-        val probes = mutableListOf<Pair<String, CompletableFuture<S5StunCodec.MappedEndpoint>>>()
-        targets.forEach { remote ->
-            if (current != generation || live.isClosed) return
-            val transaction = ByteArray(12).also(random::nextBytes)
-            val key = transaction.joinToString("") { "%02x".format(it.toInt() and 255) }
-            val future = CompletableFuture<S5StunCodec.MappedEndpoint>()
-            stun[key] = StunPending(remote, transaction, future)
-            probes += key to future
-            send(live, remote, S5StunCodec.bindingRequest(transaction))
-        }
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1600L)
-        probes.forEach { (key, future) ->
-            try {
-                val remaining = deadline - System.nanoTime()
-                if (remaining > 0L) {
-                    val mapped = future.get(remaining, TimeUnit.NANOSECONDS)
-                    S5DirectCandidatePolicy.accept(mapped.address, mapped.port, expiry,
-                        System.currentTimeMillis())?.let(result::add)
+            val probes = mutableListOf<Pair<String, CompletableFuture<S5StunCodec.MappedEndpoint>>>()
+            targets.forEach { remote ->
+                if (current != generation || live.isClosed) return
+                val transaction = ByteArray(12).also(random::nextBytes)
+                val key = transaction.joinToString("") { "%02x".format(it.toInt() and 255) }
+                val future = CompletableFuture<S5StunCodec.MappedEndpoint>()
+                stun[key] = StunPending(remote, transaction, future)
+                probes += key to future
+                send(live, remote, S5StunCodec.bindingRequest(transaction))
+            }
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1600L)
+            probes.forEach { (key, future) ->
+                try {
+                    val remaining = deadline - System.nanoTime()
+                    if (remaining > 0L) {
+                        val mapped = future.get(remaining, TimeUnit.NANOSECONDS)
+                        S5DirectCandidatePolicy.accept(mapped.address, mapped.port, expiry,
+                            System.currentTimeMillis())?.let(result::add)
+                    }
+                } catch (_: Exception) {
+                    // Keep other IPv4/IPv6 candidates; never invent an external mapping.
+                } finally {
+                    stun.remove(key)
                 }
-            } catch (_: Exception) {
-                // Keep other IPv4/IPv6 candidates; never invent an external mapping.
-            } finally {
-                stun.remove(key)
             }
         }
         if (current != generation) return
         localCandidates = result.distinctBy { it.ip to it.port }.take(8)
         lastCandidateRefreshAtMillis = System.currentTimeMillis()
-        lastFailureReason = if (localCandidates.isEmpty()) "STUN_NO_CANDIDATES" else null
-        lastDiagnostic = if (localCandidates.isEmpty())
-            "UDP监听正常，但IPv4/IPv6 STUN均未返回可用候选；检查UDP/3478"
-        else "获得" + localCandidates.size + "个新鲜IPv4/IPv6候选，等待双方握手"
+        lastFailureReason = if (probeStun && localCandidates.isEmpty())
+            "STUN_NO_CANDIDATES" else null
+        lastDiagnostic = when {
+            !probeStun && localCandidates.isEmpty() ->
+                "暂无已绑定家人，已暂停STUN探测以节省电量"
+            !probeStun ->
+                "获得" + localCandidates.size + "个本地IPv6候选；暂无已绑定家人，已暂停STUN探测"
+            localCandidates.isEmpty() ->
+                "UDP监听正常，但IPv4/IPv6 STUN均未返回可用候选；检查UDP/3478"
+            else ->
+                "获得" + localCandidates.size + "个新鲜IPv4/IPv6候选，等待双方握手"
+        }
         onChanged()
         publishAll()
         val cleanupNow = System.currentTimeMillis()

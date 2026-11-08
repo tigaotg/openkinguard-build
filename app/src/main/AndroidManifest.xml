@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- S2 adds an optional user-started connected-device foreground service. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Acquired only for a bounded background heartbeat task, never permanently. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />

@@ -12,6 +12,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.Executors
@@ -28,6 +29,9 @@ class S1LanService : Service() {
         private const val NOTIFICATION_ID = 205
         private const val STARTING_WINDOW_MS = 15_000L
         private const val TICK_INTERVAL_SECONDS = 60L
+        // Bound CPU-awake time to the short critical heartbeat; never hold a
+        // permanent wakelock for the whole background-listening session.
+        private const val TICK_WAKE_LOCK_TIMEOUT_MS = 15_000L
         private val tickInProgress = AtomicBoolean(false)
 
         @Volatile private var startupFailure: String? = null
@@ -397,6 +401,16 @@ class S1LanService : Service() {
             tickInProgress.set(false)
             return
         }
+        val wakeLock = runCatching {
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+                "$packageName:background-tick").apply {
+                setReferenceCounted(false)
+                acquire(TICK_WAKE_LOCK_TIMEOUT_MS)
+            }
+        }.onFailure {
+            Log.w("OpenKinGuard", "Cannot acquire bounded heartbeat wakelock", it)
+        }.getOrNull()
         try {
             val manager = S1Runtime.manager(applicationContext)
             manager.probeAsync()
@@ -431,6 +445,7 @@ class S1LanService : Service() {
             BackgroundMonitorHealth.abandonTick(
                 generation, SystemClock.elapsedRealtime()
             )
+            runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
             tickInProgress.set(false)
         }
     }
