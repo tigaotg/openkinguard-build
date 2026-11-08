@@ -60,7 +60,7 @@ internal class S2NostrTransport(
     @Volatile private var epoch = 0L
     private var networkCallbackRegistered = false
     private var lastDefaultNetwork: Network? = null
-    private var lastLinkProperties: android.net.LinkProperties? = null
+    @Volatile private var lastLinkProperties: android.net.LinkProperties? = null
     private var pendingDirectAddressRefresh: ScheduledFuture<*>? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleNetworkRecheck()
@@ -86,7 +86,7 @@ internal class S2NostrTransport(
                        val issued: Long, val expires: Long, val nostrPublic: String)
 
     private inner class Slot(val url: String, val generation: Long) {
-        var socket: WebSocket? = null
+        @Volatile var socket: WebSocket? = null
         @Volatile var live = false
         // A WebSocket connection is NOT proof that a Nostr relay accepts our
         // subscriptions or application events. NIP-01 requires EOSE and OK.
@@ -97,7 +97,7 @@ internal class S2NostrTransport(
         @Volatile var message = "正在连接"
         @Volatile var lastCommunicationAtMillis = 0L
         @Volatile var lastFailureReason: String? = null
-        var reconnectAttempt = 0
+        @Volatile var reconnectAttempt = 0
 
         val ready: Boolean
             get() = live && inboxSubscribed && cardAccepted && !blocked

@@ -53,8 +53,8 @@ internal class S2RelayPool(
         Thread(task, "okg-private-relay-network").apply { isDaemon = true }
     }
     private var networkCallbackRegistered = false
-    private var lastDefaultNetwork: Network? = null
-    private var lastLinkProperties: android.net.LinkProperties? = null
+    @Volatile private var lastDefaultNetwork: Network? = null
+    @Volatile private var lastLinkProperties: android.net.LinkProperties? = null
     private var pendingNetworkCheck: ScheduledFuture<*>? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleNetworkRecheck()

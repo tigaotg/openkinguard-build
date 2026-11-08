@@ -64,7 +64,7 @@ internal class S2RelayClient(
         get() = connected && "family-peers-v1" in familyCapabilities &&
             "family-pair-v1" in familyCapabilities
     private var reconnectAttempt = 0
-    private var epoch = 0L
+    @Volatile private var epoch = 0L
 
     companion object {
         fun normalize(url: String): String {
