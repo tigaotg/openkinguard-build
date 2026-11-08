@@ -382,6 +382,11 @@ class S1LanService : Service() {
      * default network schedules a bounded heartbeat, rather than waiting up to 60s.
      */
     private fun scheduleNetworkRecovery() {
+        // Record Wi-Fi/mobile handovers without waiting for the next 60-second heartbeat.
+        runCatching {
+            ConnectionHistoryRecorder.schedule(applicationContext,
+                S1Runtime.manager(applicationContext))
+        }
         val generation = networkChangeGeneration.incrementAndGet()
         val executor = scheduler ?: return
         runCatching {
@@ -536,6 +541,11 @@ class S1LanService : Service() {
                 runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
             }
             tickInProgress.set(false)
+            // Runs on a separate daemon worker and does not extend the bounded wakelock.
+            runCatching {
+                ConnectionHistoryRecorder.schedule(applicationContext,
+                    S1Runtime.manager(applicationContext))
+            }
         }
     }
 

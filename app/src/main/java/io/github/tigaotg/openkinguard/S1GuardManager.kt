@@ -1948,7 +1948,11 @@ class S1GuardManager(context: Context) {
         signal()
     }
 
-    private fun signal() { runCatching { changed?.invoke() } }
+    private fun signal() {
+        runCatching { changed?.invoke() }
+        // The worker records only transitions or one minute snapshots; UI/network threads never write SQLite.
+        ConnectionHistoryRecorder.schedule(app, this)
+    }
 
     /** Re-register TXT metadata only after the previous advertisement is fully released. */
     @Synchronized private fun refreshAdvertisement() {

@@ -672,6 +672,8 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     }
     LaunchedEffect(manager) {
         while (true) {
+            // Foreground-only mode still records history, even when monitoring consent is off.
+            ConnectionHistoryRecorder.schedule(context, manager)
             if (!S1Runtime.isBackgroundListening()) {
                 manager.probeAsync()
                 withContext(Dispatchers.IO) {

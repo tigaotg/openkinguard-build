@@ -15,6 +15,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
@@ -127,7 +131,13 @@ internal fun ConnectionStatusSection(
     onRefresh: () -> Unit,
     onCopy: () -> Unit
 ) {
+    var showHistory by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedButton(onClick = { showHistory = !showHistory },
+            modifier = Modifier.fillMaxWidth()) {
+            Text(if (showHistory) "收起7天连接历史" else "查看最近7天连接历史 / 导出诊断")
+        }
+        if (showHistory) ConnectionHistoryPanel()
         Text("本页面可随时重新打开。状态数据约每5秒刷新一次，已绑定设备约每30秒进行一次签名可达性检查。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -222,6 +232,7 @@ internal fun ConnectionStatusSection(
                 StatusLine("局域网 TCP", if (peer.lanVerified) "近期验签成功" else "未验证")
                 StatusLine("私人 WSS 中继", if (peer.relayVerified) "近120秒内验签成功" else "近120秒内无验签成功")
                 StatusLine("UDP P2P 直连", if (peer.directVerified) "近120秒内验签成功" else "近120秒内无验签成功")
+                StatusLine("历史匿名代号", ConnectionHistoryPolicy.peerAlias(peer.relationId))
                 StatusLine("最近收到对方签名消息",
                     ageLabel(peer.lastSignedMessageAtMillis, state.updatedAtMillis))
             }
