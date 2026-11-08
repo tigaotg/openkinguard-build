@@ -436,7 +436,6 @@ internal class S2NostrTransport(
         slot.cardEventId = null
         slot.lastFailureReason = reason.take(160)
         slot.message = "断线重连：" + reason.take(45)
-        onChanged()
         if (enabled && connectivity.activeNetwork != null) {
             val delay = NetworkReconnectPolicy.delayMillis(
                 slot.reconnectAttempt++, ThreadLocalRandom.current().nextDouble())
@@ -445,6 +444,7 @@ internal class S2NostrTransport(
         } else if (enabled) {
             slot.message = "网络不可用，等待系统恢复网络"
         }
+        onChanged()
     }
 
 

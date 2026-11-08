@@ -63,6 +63,11 @@ internal class S2RelayPool(
         ) {
             if (connectivity.activeNetwork == network) scheduleNetworkRecheck()
         }
+        override fun onLinkPropertiesChanged(
+            network: Network, properties: android.net.LinkProperties
+        ) {
+            if (connectivity.activeNetwork == network) scheduleNetworkRecheck(force = true)
+        }
     }
 
     private val slots = List(3) { index ->
@@ -170,14 +175,14 @@ internal class S2RelayPool(
         }
     }
 
-    private fun scheduleNetworkRecheck() {
+    private fun scheduleNetworkRecheck(force: Boolean = false) {
         synchronized(this) {
             pendingNetworkCheck?.cancel(false)
             pendingNetworkCheck = networkScheduler.schedule({
                 val changed = synchronized(this) {
                     if (endpoints.isEmpty()) return@schedule
                     val actual = connectivity.activeNetwork
-                    if (actual == lastDefaultNetwork) return@schedule
+                    if (!force && actual == lastDefaultNetwork) return@schedule
                     lastDefaultNetwork = actual
                     slots.take(endpoints.size).forEach { client ->
                         client.networkChanged(actual != null)
