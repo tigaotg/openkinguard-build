@@ -181,7 +181,7 @@ internal class S5DirectUdp(
             isDaemon = true
             start()
         }
-        scheduleGather(current, 0)
+        scheduleGather(current, 0, forceStunOnce = hasPairedPeers())
         onChanged()
     }
 
@@ -256,11 +256,35 @@ internal class S5DirectUdp(
         }
     }
 
-    private fun activePeerCount(): Int =
-        pairings.snapshot().peers.count { it.active }
+    private fun hasPairedPeers(): Boolean =
+        pairings.snapshot().peers.any { it.active }
+
+    /** Only fresh peer candidates or a recently verified route justify periodic STUN. */
+    private fun activePeerCount(): Int {
+        val now = System.currentTimeMillis()
+        return pairings.snapshot().peers.filter { it.active }.count { peer ->
+            verified(peer.peerFingerprint) ||
+                peerCandidates[peer.peerFingerprint].orEmpty().any {
+                    S5DirectCandidatePolicy.fresh(it, now)
+                }
+        }
+    }
 
     fun onSignalReady() {
-        if (active) scheduler.execute { publishAll() }
+        if (!active) return
+        val current = generation
+        scheduler.execute {
+            if (current != generation || !active) return@execute
+            runCatching { gather(current, probeStun = hasPairedPeers()) }.onFailure {
+                lastDiagnostic = "信令恢复后候选刷新失败：" + it.javaClass.simpleName
+                lastFailureReason = it.message ?: it.javaClass.simpleName
+                onChanged()
+            }
+            if (current == generation && active) {
+                scheduleGather(current,
+                    S5DirectMaintenancePolicy.plan(activePeerCount()).refreshIntervalSeconds)
+            }
+        }
     }
 
     fun onCandidates(peer: String, candidates: List<S5DirectCandidatePolicy.Candidate>) {
@@ -274,6 +298,10 @@ internal class S5DirectUdp(
         lastDiagnostic = "收到" + peer.take(8) + "的加密候选，正在尝试连通性检查"
         onChanged()
         requestProbe()
+        val current = generation
+        scheduler.execute {
+            if (current == generation && active) scheduleGather(current, 0)
+        }
     }
 
     /** Returns raw bytes for the existing pinned-key reply verifier. */
@@ -445,12 +473,17 @@ internal class S5DirectUdp(
         }
     }
 
-    private fun scheduleGather(current: Long, delaySeconds: Long) {
+    private fun scheduleGather(
+        current: Long,
+        delaySeconds: Long,
+        forceStunOnce: Boolean = false
+    ) {
         gatherFuture?.cancel(false)
         gatherFuture = scheduler.schedule({
             if (current != generation || !active) return@schedule
             val plan = S5DirectMaintenancePolicy.plan(activePeerCount())
-            runCatching { gather(current, probeStun = plan.probeStun) }.onFailure {
+            val probeStun = plan.probeStun || (forceStunOnce && hasPairedPeers())
+            runCatching { gather(current, probeStun = probeStun) }.onFailure {
                 lastDiagnostic = "公网候选采集失败：" + it.javaClass.simpleName
                 lastFailureReason = it.message ?: it.javaClass.simpleName
                 onChanged()
@@ -531,9 +564,9 @@ internal class S5DirectUdp(
             "STUN_NO_CANDIDATES" else null
         lastDiagnostic = when {
             !probeStun && localCandidates.isEmpty() ->
-                "暂无已绑定家人，已暂停STUN探测以节省电量"
+                "暂无近期活跃的家属连接，已暂停STUN探测以节省电量"
             !probeStun ->
-                "获得" + localCandidates.size + "个本地IPv6候选；暂无已绑定家人，已暂停STUN探测"
+                "获得" + localCandidates.size + "个本地IPv6候选；暂无近期活跃的家属连接，已暂停STUN探测"
             localCandidates.isEmpty() ->
                 "UDP监听正常，但IPv4/IPv6 STUN均未返回可用候选；检查UDP/3478"
             else ->
