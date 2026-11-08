@@ -1,6 +1,8 @@
 package io.github.tigaotg.openkinguard
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import io.github.tigaotg.openkinguard.core.engine.S5StunCodec
 import io.github.tigaotg.openkinguard.security.protocol.LanTestWire
 import org.json.JSONObject
@@ -11,7 +13,6 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.NetworkInterface
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.security.SecureRandom
@@ -20,6 +21,8 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -41,7 +44,10 @@ internal class S5DirectUdp(
     private val onChanged: () -> Unit,
     private val requestProbe: () -> Unit,
 ) {
-    private val crypto = S2PublicNostrCrypto(context.applicationContext, keys)
+    private val app = context.applicationContext
+    private val connectivity = app.getSystemService(Context.CONNECTIVITY_SERVICE)
+        as ConnectivityManager
+    private val crypto = S2PublicNostrCrypto(app, keys)
     private val localIdentity by lazy { crypto.load() }
     private val ownFingerprint by lazy { keys.createOrLoad().fingerprint }
     private val random = SecureRandom()
@@ -61,9 +67,16 @@ internal class S5DirectUdp(
     private val cachedReplies = ConcurrentHashMap<String, ByteArray>()
     private val inFlight = AtomicInteger()
     @Volatile private var socket: DatagramSocket? = null
+    @Volatile private var boundNetwork: Network? = null
+    @Volatile private var requested = false
     @Volatile private var localCandidates: List<S5DirectCandidatePolicy.Candidate> = emptyList()
     @Volatile private var lastDiagnostic = "未启动"
+    @Volatile private var lastFailureReason: String? = null
+    @Volatile private var lastCandidateRefreshAtMillis = 0L
+    @Volatile private var lastSuccessfulCommunicationAtMillis = 0L
     @Volatile private var generation = 0L
+    private var socketRetryAttempt = 0
+    private var socketRetryFuture: ScheduledFuture<*>? = null
 
     data class DirectReply(val bytes: ByteArray, val endpoint: InetSocketAddress)
     private data class Pending(val fingerprint: String, val expiration: Long,
@@ -73,11 +86,16 @@ internal class S5DirectUdp(
     private data class Route(val destination: InetSocketAddress, val verifiedAt: Long)
 
     val active: Boolean get() = socket?.isClosed == false
-    val status: String get() =
-        if (!active) "未启用S5直连测试"
-        else "UDP端口${socket?.localPort ?: 0}；本机候选${localCandidates.size}个；" +
-            "对端候选${peerCandidates.values.sumOf { it.size }}个；" +
-            "已收到有效签名回执的直连设备${verifiedRoutes.count { verified(it.key) }}个；$lastDiagnostic"
+    val status: String get() = when {
+        !requested -> "未授权持续UDP监听"
+        !active -> "持续监听已获授权，等待系统默认网络；" + lastDiagnostic
+        else -> "UDP端口" + (socket?.localPort ?: 0) +
+            "；本机候选" + localCandidates.size + "个；对端候选" +
+            peerCandidates.values.sumOf { it.size } + "个；已验签直连设备" +
+            verifiedRoutes.count { verified(it.key) } + "个；最近候选刷新" +
+            lastCandidateRefreshAtMillis + "；最近成功通信" +
+            lastSuccessfulCommunicationAtMillis + "；" + lastDiagnostic
+    }
 
     fun verified(peer: String): Boolean {
         val route = verifiedRoutes[peer] ?: return false
@@ -90,40 +108,112 @@ internal class S5DirectUdp(
         })
 
     @Synchronized fun start() {
+        requested = true
         if (active) return
         localIdentity
+        openSocketForCurrentNetwork()
+    }
+
+    @Synchronized fun stop() {
+        requested = false
+        socketRetryFuture?.cancel(false)
+        socketRetryFuture = null
+        releaseTransport("UDP持续监听授权已关闭")
+        lastDiagnostic = "已停止，本机UDP端口关闭"
+        onChanged()
+    }
+
+    private fun openSocketForCurrentNetwork() {
+        if (!requested || active) return
+        val network = connectivity.activeNetwork
+        if (network == null) {
+            boundNetwork = null
+            lastFailureReason = "NO_DEFAULT_NETWORK"
+            lastDiagnostic = "持续监听授权已保存；当前没有默认网络，等待网络恢复"
+            onChanged()
+            return
+        }
         generation++
         val current = generation
-        val created = DatagramSocket(null).apply {
-            reuseAddress = false
-            bind(InetSocketAddress(0))
-            soTimeout = 1500
+        val created = DatagramSocket(null)
+        try {
+            created.reuseAddress = false
+            created.bind(InetSocketAddress(0))
+            network.bindSocket(created)
+            created.soTimeout = 1500
+        } catch (error: Exception) {
+            runCatching { created.close() }
+            socket = null
+            boundNetwork = null
+            lastFailureReason = error.message ?: error.javaClass.simpleName
+            lastDiagnostic = "无法将UDP监听绑定到当前网络：" + lastFailureReason
+            onChanged()
+            scheduleSocketRetry()
+            return
         }
         socket = created
-        lastDiagnostic = "持续UDP监听已启动，正在获取可复用的STUN映射"
+        boundNetwork = network
+        socketRetryAttempt = 0
+        socketRetryFuture?.cancel(false)
+        socketRetryFuture = null
+        lastFailureReason = null
+        lastDiagnostic = "UDP端口已绑定当前系统网络，正在刷新IPv4/IPv6候选"
         Thread({ receiveLoop(created, current) }, "okg-s5-udp-receive").apply {
-            isDaemon = true; start()
+            isDaemon = true
+            start()
         }
         scheduleGather(current, 0)
         onChanged()
     }
 
-    @Synchronized fun stop() {
+    private fun scheduleSocketRetry() {
+        if (!requested || connectivity.activeNetwork == null) return
+        socketRetryFuture?.cancel(false)
+        val delay = NetworkReconnectPolicy.delayMillis(
+            socketRetryAttempt++, ThreadLocalRandom.current().nextDouble())
+        socketRetryFuture = scheduler.schedule({
+            synchronized(this) {
+                socketRetryFuture = null
+                if (requested && !active) openSocketForCurrentNetwork()
+            }
+        }, delay, TimeUnit.MILLISECONDS)
+    }
+
+    @Synchronized
+    fun networkChanged() {
+        if (!requested) return
+        socketRetryFuture?.cancel(false)
+        socketRetryFuture = null
+        releaseTransport("Android网络变化，旧UDP映射和直连路径已失效")
+        val network = connectivity.activeNetwork
+        if (network == null) {
+            lastDiagnostic = "持续监听仍获授权，但当前无默认网络；等待Wi-Fi或移动数据恢复"
+            lastFailureReason = "NO_DEFAULT_NETWORK"
+            onChanged()
+            return
+        }
+        openSocketForCurrentNetwork()
+        if (active) lastDiagnostic = "网络或地址变化，UDP Socket已重新绑定并刷新STUN候选"
+        onChanged()
+    }
+
+    private fun releaseTransport(reason: String) {
         generation++
         socket?.close()
         socket = null
+        boundNetwork = null
         localCandidates = emptyList()
         peerCandidates.clear()
         verifiedRoutes.clear()
         publishAt.clear()
         seenRequests.clear()
         cachedReplies.clear()
-        pending.values.forEach { it.answer.completeExceptionally(IOException("UDP监听已停止")) }
+        pending.values.forEach { it.answer.completeExceptionally(IOException(reason)) }
         pending.clear()
-        stun.values.forEach { it.answer.completeExceptionally(IOException("UDP监听已停止")) }
+        stun.values.forEach { it.answer.completeExceptionally(IOException(reason)) }
         stun.clear()
-        lastDiagnostic = "已停止，本机UDP端口关闭"
-        onChanged()
+        lastFailureReason = reason
+        lastCandidateRefreshAtMillis = 0L
     }
 
     fun onContact(peer: String) {
@@ -142,19 +232,9 @@ internal class S5DirectUdp(
         peerCandidates[peer] = candidates.filter {
             S5DirectCandidatePolicy.fresh(it, now)
         }.take(8)
-        lastDiagnostic = "收到${peer.take(8)}的加密候选，正在尝试连通性检查"
+        lastDiagnostic = "收到" + peer.take(8) + "的加密候选，正在尝试连通性检查"
         onChanged()
         requestProbe()
-    }
-
-    fun networkChanged() {
-        if (!active) return
-        // Android may keep an old netId on a UDP socket created before a
-        // Wi-Fi/cellular switch. Rebind instead of reusing stale NAT mappings.
-        stop()
-        start()
-        lastDiagnostic = "网络切换，已重建UDP端口并重新协商地址"
-        onChanged()
     }
 
     /** Returns raw bytes for the existing pinned-key reply verifier. */
@@ -191,6 +271,7 @@ internal class S5DirectUdp(
                     if (burst % 3 == 0) requestProbe()
                 }
             }
+            lastFailureReason = "UDP_DIRECT_TIMEOUT"
             lastDiagnostic = "UDP握手超时：候选存在，但没有双向加密回包；可能是CGNAT或防火墙"
             onChanged()
             throw SocketTimeoutException(lastDiagnostic)
@@ -205,7 +286,9 @@ internal class S5DirectUdp(
     /** Called ONLY after S1GuardManager verifies the signed application receipt. */
     fun confirmSignedReply(peer: String, source: InetSocketAddress) {
         verifiedRoutes[peer] = Route(source, System.currentTimeMillis())
-        lastDiagnostic = "${peer.take(8)} 已完成UDP双向收发和应用签名回执校验"
+        lastSuccessfulCommunicationAtMillis = System.currentTimeMillis()
+        lastFailureReason = null
+        lastDiagnostic = peer.take(8) + " 已完成UDP双向收发和应用签名回执校验"
         onChanged()
     }
 
@@ -312,18 +395,21 @@ internal class S5DirectUdp(
                 lastDiagnostic = "公网候选采集失败：${it.javaClass.simpleName}"
                 onChanged()
             }
-            if (current == generation && active) scheduleGather(current, 30)
+            if (current == generation && active) scheduleGather(current, 60)
         }, delaySeconds, TimeUnit.SECONDS)
     }
 
     private fun gather(current: Long) {
         val live = socket ?: return
-        val expiry = System.currentTimeMillis() + 90_000
+        val network = boundNetwork ?: return
+        val expiry = System.currentTimeMillis() + 110_000L
         val result = mutableListOf<S5DirectCandidatePolicy.Candidate>()
-        // Global IPv6 can work even when both cellular IPv4s use CGNAT.
+
+        // Only advertise global IPv6 addresses belonging to the socket's bound
+        // Android Network; do not leak addresses from inactive Wi-Fi/cellular links.
         runCatching {
-            NetworkInterface.getNetworkInterfaces().toList()
-                .flatMap { it.inetAddresses.toList() }
+            connectivity.getLinkProperties(network)?.linkAddresses.orEmpty()
+                .map { it.address }
                 .filterIsInstance<Inet6Address>()
                 .filter { !it.isAnyLocalAddress && !it.isLinkLocalAddress &&
                     !it.isLoopbackAddress && !it.isSiteLocalAddress &&
@@ -333,36 +419,57 @@ internal class S5DirectUdp(
                         live.localPort, expiry, System.currentTimeMillis())?.let(result::add)
                 }
         }
-        for (domain in listOf("stun.miwifi.com", "stun.hitv.com", "stun.qq.com")) {
+
+        // Probe both address families when a STUN host publishes A and AAAA records.
+        // Send all requests first, then collect them within one bounded window.
+        val targets = listOf("stun.miwifi.com", "stun.hitv.com", "stun.qq.com")
+            .flatMap { domain ->
+                runCatching { InetAddress.getAllByName(domain).toList() }
+                    .getOrDefault(emptyList())
+                    .let { addresses ->
+                        listOfNotNull(
+                            addresses.firstOrNull { it is Inet4Address },
+                            addresses.firstOrNull { it is Inet6Address }
+                        ).map { InetSocketAddress(it, 3478) }
+                    }
+            }.distinctBy { it.address to it.port }.take(6)
+
+        val probes = mutableListOf<Pair<String, CompletableFuture<S5StunCodec.MappedEndpoint>>>()
+        targets.forEach { remote ->
             if (current != generation || live.isClosed) return
-            val remote = runCatching {
-                InetSocketAddress(InetAddress.getAllByName(domain)
-                    .first { it is Inet4Address }, 3478)
-            }.getOrNull() ?: continue
-            val tx = ByteArray(12).also(random::nextBytes)
-            val key = tx.joinToString("") { "%02x".format(it.toInt() and 255) }
+            val transaction = ByteArray(12).also(random::nextBytes)
+            val key = transaction.joinToString("") { "%02x".format(it.toInt() and 255) }
             val future = CompletableFuture<S5StunCodec.MappedEndpoint>()
-            stun[key] = StunPending(remote, tx, future)
+            stun[key] = StunPending(remote, transaction, future)
+            probes += key to future
+            send(live, remote, S5StunCodec.bindingRequest(transaction))
+        }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1600L)
+        probes.forEach { (key, future) ->
             try {
-                send(live, remote, S5StunCodec.bindingRequest(tx))
-                val mapped = future.get(1400, TimeUnit.MILLISECONDS)
-                S5DirectCandidatePolicy.accept(mapped.address, mapped.port, expiry,
-                    System.currentTimeMillis())?.let(result::add)
+                val remaining = deadline - System.nanoTime()
+                if (remaining > 0L) {
+                    val mapped = future.get(remaining, TimeUnit.NANOSECONDS)
+                    S5DirectCandidatePolicy.accept(mapped.address, mapped.port, expiry,
+                        System.currentTimeMillis())?.let(result::add)
+                }
             } catch (_: Exception) {
-                // Keep other candidates; never invent an external mapping.
+                // Keep other IPv4/IPv6 candidates; never invent an external mapping.
             } finally {
                 stun.remove(key)
             }
         }
         if (current != generation) return
         localCandidates = result.distinctBy { it.ip to it.port }.take(8)
+        lastCandidateRefreshAtMillis = System.currentTimeMillis()
+        lastFailureReason = if (localCandidates.isEmpty()) "STUN_NO_CANDIDATES" else null
         lastDiagnostic = if (localCandidates.isEmpty())
-            "持续UDP监听正常，但STUN没有返回候选；检查UDP/3478"
-        else "获得${localCandidates.size}个可复用UDP候选，等待双方握手"
+            "UDP监听正常，但IPv4/IPv6 STUN均未返回可用候选；检查UDP/3478"
+        else "获得" + localCandidates.size + "个新鲜IPv4/IPv6候选，等待双方握手"
         onChanged()
         publishAll()
-        val now = System.currentTimeMillis()
-        seenRequests.entries.removeIf { it.value < now }
+        val cleanupNow = System.currentTimeMillis()
+        seenRequests.entries.removeIf { it.value < cleanupNow }
         cachedReplies.keys.retainAll(seenRequests.keys)
     }
 
