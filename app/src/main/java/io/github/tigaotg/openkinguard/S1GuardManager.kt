@@ -2381,11 +2381,15 @@ class S1GuardManager(context: Context) {
         return errors.distinct()
     }
 
-    /** Sends one exercise packet and verifies signed application-layer receipt. I/O thread only. */
+    /** Sends one signed case packet; every SOS/check-in/control body is S4 encrypted. */
     private fun request(peer: SavedPeer, node: DiscoveredNode?, kind: String, eventId: String): String {
         require(node == null || node.port == LanTestWire.PORT)
-        val body = if (kind == LanTestWire.PING) LanTestWire.pingPayload(peer.relationId)
-            else {
+        if (kind in S1CaseWire.encryptedKinds) ensurePeerEncryptionCard(peer, node)
+        val body = when {
+            kind == LanTestWire.PING -> LanTestWire.pingPayload(peer.relationId)
+            kind == S1CaseWire.PROFILE -> S1CaseWire.request(peer.relationId, eventId,
+                encryptionCard = publicNostr.ownMessageEncryptionCard())
+            else -> {
                 val createdAt = when (kind) {
                     S1CaseWire.SOS -> store.snapshot().cases.find { it.ownSos &&
                         it.eventId == eventId }?.createdAt
@@ -2393,9 +2397,9 @@ class S1GuardManager(context: Context) {
                         it.eventId == eventId }?.timestamp
                     else -> null
                 }
-                S1CaseWire.request(peer.relationId, eventId, createdAt,
-                    if (kind == S1CaseWire.PROFILE) null else ownNickname())
+                S1CaseWire.request(peer.relationId, eventId, createdAt, ownNickname())
             }
+        }
         require(listener?.isClosed == false) { "S1测试仅在应用前台联网" }
         val signed = signedMessage(peer, kind, eventId, body)
         val (replyBytes, usedRelay, directEndpoint) = sendSignedFrame(peer, node,
@@ -2404,41 +2408,51 @@ class S1GuardManager(context: Context) {
                 kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN))
         val reply = LanTestWire.decode(replyBytes)
         val responseKind = reply.message.payloadKind
-        val replyRelation: String
-        val acknowledged: String?
         if (kind == LanTestWire.PING) {
             require(responseKind == LanTestWire.ACK) { "不是签名测试回执" }
-            val info = LanTestWire.body(reply.message)
-            replyRelation = info.relationId
-            acknowledged = info.acknowledgedMessageId
         } else {
             require(responseKind in S1CaseWire.expectedResponse(kind)) { "回执步骤不匹配" }
-            val info = S1CaseWire.body(reply.message)
-            require(info.eventId == eventId) { "回执事件不匹配" }
-            replyRelation = info.relationId
-            acknowledged = info.respondingTo
         }
-        require(replyRelation == peer.relationId && acknowledged == signed.message.messageId.value) {
-            "回执不匹配发出的消息"
-        }
-        require(reply.message.eventId == signed.message.eventId) { "签名回执关联的事件不一致" }
         val beforeName = if (kind == S1CaseWire.PROFILE)
             store.snapshot().verifiedPeerNicknames[peer.relationId] else null
-        verifyReply(reply, peer, kind, eventId)
+        verifyReply(reply, peer, kind, eventId, signed.message.messageId.value)
         if (usedRelay) relayVerifiedAt[peer.relationId] = System.currentTimeMillis()
         directEndpoint?.let { direct.confirmSignedReply(peer.peerFingerprint, it) }
         if (kind == S1CaseWire.PROFILE) {
             val afterName = store.snapshot().verifiedPeerNicknames[peer.relationId]
             if (afterName != null && afterName != beforeName) {
                 store.recordHandshake("验证资料", "PROFILE", peer.relationId, "昵称更新",
-                    "通过公钥签名及关联关系核对，更新对端显示名称：${afterName.take(18)}")
+                    "通过公钥签名及关联关系核对，更新对端显示名称：" + afterName.take(18))
             }
         } else {
             store.recordHandshake("发送并验回执", kind, peer.relationId, "成功",
-                "对端公钥签名、消息编号、关联关系及有效期已核对；回执 $responseKind")
+                "对端公钥签名、消息编号、关联关系及有效期已核对；回执 " + responseKind)
         }
         signal()
         return responseKind
+    }
+
+    /** Refresh the signed card before use; no plaintext fallback is permitted. */
+    private fun ensurePeerEncryptionCard(peer: SavedPeer, node: DiscoveredNode?) {
+        val current = store.snapshot().peerEncryptionCards[peer.peerFingerprint]
+        if (current != null && publicNostr.messageEncryptionPublic(current, peer) != null) return
+        request(peer, node, S1CaseWire.PROFILE, UUID.randomUUID().toString())
+        val refreshed = store.snapshot().peerEncryptionCards[peer.peerFingerprint]
+        require(refreshed != null &&
+            publicNostr.messageEncryptionPublic(refreshed, peer) != null) {
+            "尚未取得对端有效的签名加密公钥；为防止安全降级，本次消息未发送"
+        }
+    }
+
+    /** Route by public relationship UUID; expose command fields only after AES-GCM open. */
+    private fun decryptCaseBody(signed: SignedEnvelope, peer: SavedPeer): S1CaseWire.Body {
+        val message = signed.message
+        if (message.payloadKind !in S1CaseWire.encryptedKinds) return S1CaseWire.body(message)
+        val envelope = S4MessageWire.decode(message.payload)
+        require(envelope.relationId == peer.relationId) { "加密报文关系不匹配" }
+        val aad = S4MessageWire.associatedData(envelope.relationId, message)
+        val plaintext = publicNostr.openCasePayload(envelope.sealed, aad)
+        return S1CaseWire.bodyDecrypted(message, plaintext)
     }
 
     private data class SendResult(val bytes: ByteArray, val viaRelay: Boolean,
@@ -2540,11 +2554,12 @@ class S1GuardManager(context: Context) {
         var newlyAcceptedClaim = false
         var closedCurrentSos = false
         var newlyVerifiedHeartbeat = false
-        val inboundBody = if (msg.payloadKind != LanTestWire.PING) S1CaseWire.body(msg)
-            else null
         val answerKind = store.update { state ->
             val admitted = admit(signed, peer, own, state)
             val duplicate = admitted == null
+            // Decrypt only after the pinned device signature and replay window have passed.
+            val inboundBody = if (!duplicate && msg.payloadKind != LanTestWire.PING)
+                decryptCaseBody(signed, peer) else null
             if (!duplicate) newlyVerifiedHeartbeat = true
             var updated = if (duplicate) state else state.copy(replay = state.replay +
                 (peer.relationId + "|" + peer.peerFingerprint to requireNotNull(admitted)),
@@ -2554,6 +2569,14 @@ class S1GuardManager(context: Context) {
             // A verified message carries the sender's chosen display name. This is not
             // an unauthenticated mDNS nickname and can immediately repair an empty cache.
             val signedNickname = inboundBody?.senderNickname
+            val receivedCard = inboundBody?.encryptionCard
+            if (!duplicate && receivedCard != null) {
+                require(publicNostr.messageEncryptionPublic(receivedCard, peer) != null) {
+                    "对端加密公钥卡签名或有效期无效；拒绝建立加密会话"
+                }
+                updated = updated.copy(peerEncryptionCards =
+                    updated.peerEncryptionCards + (peer.peerFingerprint to receivedCard))
+            }
             if (!duplicate && signedNickname != null) {
                 updated = updated.copy(verifiedPeerNicknames =
                     updated.verifiedPeerNicknames + (peer.relationId to signedNickname),
@@ -2677,7 +2700,8 @@ class S1GuardManager(context: Context) {
         val replyBody = when (answerKind) {
             LanTestWire.ACK -> LanTestWire.ackPayload(peer.relationId, msg.messageId.value)
             S1CaseWire.PROFILE_REPLY -> S1CaseWire.profileResponse(peer.relationId,
-                msg.eventId.value, msg.messageId.value, ownNickname())
+                msg.eventId.value, msg.messageId.value, ownNickname(),
+                publicNostr.ownMessageEncryptionCard())
             else -> S1CaseWire.response(peer.relationId, msg.eventId.value, msg.messageId.value)
         }
         val reply = signedMessage(peer, answerKind, msg.eventId.value, replyBody)
@@ -2866,17 +2890,31 @@ class S1GuardManager(context: Context) {
     }
 
     private fun verifyReply(reply: SignedEnvelope, peer: SavedPeer, requestKind: String,
-                            eventId: String) {
+                            eventId: String, expectedRequestMessageId: String) {
         val own = keys.createOrLoad().fingerprint
         store.update { state ->
             val admitted = admit(reply, peer, own, state)
                 ?: throw IllegalArgumentException("重复的签名回执")
+            val kind = reply.message.payloadKind
+            val body = if (requestKind == LanTestWire.PING) {
+                val info = LanTestWire.body(reply.message)
+                require(kind == LanTestWire.ACK && info.relationId == peer.relationId &&
+                    info.acknowledgedMessageId == expectedRequestMessageId) { "签名心跳回执不匹配" }
+                null
+            } else {
+                require(kind in S1CaseWire.expectedResponse(requestKind)) { "回执步骤不匹配" }
+                val info = decryptCaseBody(reply, peer)
+                require(info.eventId == eventId && info.relationId == peer.relationId &&
+                    info.respondingTo == expectedRequestMessageId) {
+                    "签名回执与原始消息、关系或事件不匹配"
+                }
+                info
+            }
             var updated = state.copy(replay = state.replay +
                 (peer.relationId + "|" + peer.peerFingerprint to admitted),
                 lastVerifiedAt = state.lastVerifiedAt +
                     (peer.relationId to System.currentTimeMillis()),
                 lastNotifiedLossStage = state.lastNotifiedLossStage - peer.relationId)
-            val kind = reply.message.payloadKind
             updated = updated.copy(cases = updated.cases.map { item ->
                 if (item.eventId != eventId) item else when (requestKind) {
                     S1CaseWire.SOS -> if (item.ownSos)
@@ -2900,8 +2938,14 @@ class S1GuardManager(context: Context) {
                 })
             }
             if (requestKind == S1CaseWire.PROFILE) {
-                val remoteName = requireNotNull(S1CaseWire.body(reply.message).profileNickname) {
-                    "对端未附有效昵称"
+                val remoteName = requireNotNull(body?.profileNickname) { "对端未附有效昵称" }
+                val card = body.encryptionCard
+                if (card != null) {
+                    require(publicNostr.messageEncryptionPublic(card, peer) != null) {
+                        "对端加密公钥卡签名或有效期无效；拒绝安全降级"
+                    }
+                    updated = updated.copy(peerEncryptionCards =
+                        updated.peerEncryptionCards + (peer.peerFingerprint to card))
                 }
                 updated = updated.copy(verifiedPeerNicknames =
                     updated.verifiedPeerNicknames + (peer.relationId to remoteName),
