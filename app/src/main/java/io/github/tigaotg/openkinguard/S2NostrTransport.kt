@@ -15,6 +15,8 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -58,9 +60,20 @@ internal class S2NostrTransport(
     @Volatile private var epoch = 0L
     private var networkCallbackRegistered = false
     private var lastDefaultNetwork: Network? = null
+    private var pendingDirectAddressRefresh: ScheduledFuture<*>? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleNetworkRecheck()
         override fun onLost(network: Network) = scheduleNetworkRecheck()
+        override fun onCapabilitiesChanged(
+            network: Network, capabilities: android.net.NetworkCapabilities
+        ) {
+            if (connectivity.activeNetwork == network) scheduleNetworkRecheck()
+        }
+        override fun onLinkPropertiesChanged(
+            network: Network, properties: android.net.LinkProperties
+        ) {
+            if (connectivity.activeNetwork == network) scheduleDirectAddressRefresh(network)
+        }
     }
 
     data class Contact(val fingerprint: String, val encryptionPublic: String,
@@ -76,7 +89,9 @@ internal class S2NostrTransport(
         @Volatile var blocked = false
         @Volatile var cardEventId: String? = null
         @Volatile var message = "正在连接"
-        var reconnectSeconds = 2L
+        @Volatile var lastCommunicationAtMillis = 0L
+        @Volatile var lastFailureReason: String? = null
+        var reconnectAttempt = 0
 
         val ready: Boolean
             get() = live && inboxSubscribed && cardAccepted && !blocked
@@ -164,9 +179,27 @@ internal class S2NostrTransport(
     val status: String
         get() = synchronized(this) {
             if (!enabled) "公共 Nostr 节点未启用"
-            else "${sockets.count { it.ready }}/${sockets.size} 个公共节点确认信令订阅/公告；" +
-                sockets.mapIndexed { i, item -> "节点${i + 1}（${item.url}）：${item.message.take(95)}" }
-                    .joinToString("；")
+            else {
+                val webSockets = sockets.count { it.live }
+                val subscriptions = sockets.count { it.inboxSubscribed && !it.blocked }
+                val announcements = sockets.count { it.cardAccepted && !it.blocked }
+                val ready = sockets.count { it.ready }
+                val network = if (connectivity.activeNetwork == null) "无默认网络" else "默认网络可用"
+                "WSS " + webSockets + "/" + sockets.size +
+                    "；收件订阅 " + subscriptions + "/" + sockets.size +
+                    "；身份公告接受 " + announcements + "/" + sockets.size +
+                    "；完整信令就绪 " + ready + "/" + sockets.size +
+                    "（" + network + "）；" +
+                    sockets.mapIndexed { i, item ->
+                        val age = if (item.lastCommunicationAtMillis > 0L)
+                            ((System.currentTimeMillis() - item.lastCommunicationAtMillis)
+                                .coerceAtLeast(0L) / 1000L).toString() + "秒前收到消息"
+                        else "尚无有效消息"
+                        val failure = item.lastFailureReason?.let { "；最近失败：" + it.take(50) }.orEmpty()
+                        "节点" + (i + 1) + "：" + item.message.take(80) +
+                            "（" + age + failure + "）"
+                    }.joinToString("；")
+            }
         }
 
     /** Contact is trusted only after the original QR-pinned key signs its binding. */
@@ -224,9 +257,12 @@ internal class S2NostrTransport(
                     .onSuccess { networkCallbackRegistered = true }
             }
             urls.forEach { sockets += Slot(it, epoch) }
-            sockets.forEach(::connect)
+            if (lastDefaultNetwork != null) sockets.forEach(::connect)
+            else sockets.forEach { it.message = "没有默认网络，等待网络恢复" }
             scheduleCardRefresh(epoch)
         } else {
+            pendingDirectAddressRefresh?.cancel(false)
+            pendingDirectAddressRefresh = null
             if (networkCallbackRegistered) {
                 runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
                 networkCallbackRegistered = false
@@ -237,8 +273,7 @@ internal class S2NostrTransport(
     }
 
     private fun scheduleNetworkRecheck() {
-        // The default network may change as Wi-Fi disconnects and cellular becomes
-        // active. Debounce callbacks and rebind sockets before their ping timeout.
+        // Debounce the default-network switch before replacing every WSS session.
         reconnect.schedule({
             synchronized(this) {
                 if (!enabled) return@synchronized
@@ -254,13 +289,28 @@ internal class S2NostrTransport(
                     slot.cardAccepted = false
                     slot.cardEventId = null
                     slot.blocked = false
-                    slot.message = "网络已切换，正在重新接入公共节点"
+                    slot.reconnectAttempt = 0
+                    slot.lastFailureReason = "DEFAULT_NETWORK_CHANGED"
+                    slot.message = if (actual == null) "没有默认网络，等待网络恢复"
+                        else "网络已切换，正在重新接入公共节点并恢复订阅"
                     oldSocket?.cancel()
                     if (actual != null) connect(slot)
                 }
                 onChanged()
             }
         }, 1200, TimeUnit.MILLISECONDS)
+    }
+
+    /** IPv6 privacy-address or route changes can occur without a new Network object. */
+    private fun scheduleDirectAddressRefresh(network: Network) {
+        synchronized(this) {
+            pendingDirectAddressRefresh?.cancel(false)
+            pendingDirectAddressRefresh = reconnect.schedule({
+                if (enabled && connectivity.activeNetwork == network) {
+                    directNetworkChanged?.invoke()
+                }
+            }, 1200, TimeUnit.MILLISECONDS)
+        }
     }
 
     private fun scheduleCardRefresh(generation: Long) {
@@ -278,7 +328,8 @@ internal class S2NostrTransport(
 
     @Synchronized
     private fun connect(slot: Slot) {
-        if (!enabled || slot.generation != epoch || slot.socket != null) return
+        if (!enabled || connectivity.activeNetwork == null ||
+            slot.generation != epoch || slot.socket != null) return
         slot.message = "连接中"
         onChanged()
         slot.socket = http.newWebSocket(Request.Builder().url(slot.url).build(),
@@ -288,11 +339,13 @@ internal class S2NostrTransport(
                         ws.close(1000, "stale"); return
                     }
                     slot.live = true
+                    slot.lastCommunicationAtMillis = System.currentTimeMillis()
+                    slot.lastFailureReason = null
                     slot.inboxSubscribed = false
                     slot.cardAccepted = false
                     slot.blocked = false
                     slot.cardEventId = null
-                    slot.reconnectSeconds = 2
+                    slot.reconnectAttempt = 0
                     slot.message = "WebSocket已连接，等待节点确认订阅与身份公告"
                     onChanged()
                     runCatching {
@@ -317,6 +370,7 @@ internal class S2NostrTransport(
                         slot.socket !== ws) return
                     try {
                         val message = JSONArray(text)
+                        slot.lastCommunicationAtMillis = System.currentTimeMillis()
                         when (message.getString(0)) {
                             "EVENT" -> {
                                 val event = message.getJSONObject(2)
@@ -381,14 +435,19 @@ internal class S2NostrTransport(
         slot.cardAccepted = false
         slot.blocked = false
         slot.cardEventId = null
-        slot.message = "断线重连：${reason.take(45)}"
+        slot.lastFailureReason = reason.take(160)
+        slot.message = "断线重连：" + reason.take(45)
         onChanged()
-        if (enabled) {
-            val delay = slot.reconnectSeconds
-            slot.reconnectSeconds = (delay * 2).coerceAtMost(60L)
-            reconnect.schedule({ synchronized(this) { connect(slot) } }, delay, TimeUnit.SECONDS)
+        if (enabled && connectivity.activeNetwork != null) {
+            val delay = NetworkReconnectPolicy.delayMillis(
+                slot.reconnectAttempt++, ThreadLocalRandom.current().nextDouble())
+            reconnect.schedule({ synchronized(this) { connect(slot) } },
+                delay, TimeUnit.MILLISECONDS)
+        } else if (enabled) {
+            slot.message = "网络不可用，等待系统恢复网络"
         }
     }
+
 
     private fun refreshSlotStatus(slot: Slot) {
         if (slot.blocked || !slot.live) return
