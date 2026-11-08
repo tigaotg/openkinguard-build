@@ -2994,9 +2994,25 @@ class S1GuardManager(context: Context) {
         // Other commands (especially GPS) retain the shorter two-minute TTL.
         val validFor = if (kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN)) 420_000L
             else 120_000L
-        val message = MessageEnvelope(1, MessageId(UUID.randomUUID().toString()),
-            EventId(eventId), DeviceId("okg-$own"), UserId("okg-user-$subject"),
-            DeviceId("okg-${peer.peerFingerprint}"), now, now + validFor, next, kind, body)
+        val senderId = DeviceId("okg-" + own)
+        val recipientId = DeviceId("okg-" + peer.peerFingerprint)
+        val messageId = if (kind in S1CaseWire.encryptedKinds)
+            S4MessageWire.stableMessageId(eventId, peer.relationId, senderId.value,
+                recipientId.value, kind)
+        else MessageId(UUID.randomUUID().toString())
+        val header = MessageEnvelope(1, messageId, EventId(eventId), senderId,
+            UserId("okg-user-" + subject), recipientId, now, now + validFor, next, kind,
+            byteArrayOf(0))
+        val payload = if (kind in S1CaseWire.encryptedKinds) {
+            val card = store.snapshot().peerEncryptionCards[peer.peerFingerprint]
+                ?: throw IllegalStateException("尚未取得对端签名加密公钥；拒绝发送明文")
+            val recipientPublic = publicNostr.messageEncryptionPublic(card, peer)
+                ?: throw IllegalStateException("对端签名加密公钥已过期或无效；请重新同步资料")
+            val aad = S4MessageWire.associatedData(peer.relationId, header)
+            S4MessageWire.encode(peer.relationId,
+                publicNostr.sealCasePayload(body, recipientPublic, aad))
+        } else body
+        val message = header.copy(payload = payload)
         return SignedEnvelope(message, keys.signMessage(message))
     }
 
