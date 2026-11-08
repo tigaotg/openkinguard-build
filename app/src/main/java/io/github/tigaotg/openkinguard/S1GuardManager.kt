@@ -67,7 +67,7 @@ class S1GuardManager(context: Context) {
     private val keys = AndroidDeviceKeyStore()
     private val store = S1CaseStore(app)
     private val gps = S3GpsCapture(app)
-    private val relay = S2RelayPool(keys, { signal() }, { forwardRelayInbound(it) },
+    private val relay = S2RelayPool(app, keys, { signal() }, { forwardRelayInbound(it) },
         { slot, sender, signed -> receiveFamilyPairing(slot, sender, signed) },
         { slot, sender, session -> receiveFamilyPairingCancel(slot, sender, session) })
     private val publicNostr = S2NostrTransport(app, keys, pairings, { signal() })

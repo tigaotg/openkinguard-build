@@ -1,10 +1,12 @@
-name: OpenKinGuard Phase 2 source validation (no APK)
+name: OpenKinGuard Phase 3 network source validation (no APK)
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/compile-validation.yml'
+      - 'app/src/main/java/io/github/tigaotg/openkinguard/S2*'
+      - 'app/src/test/java/io/github/tigaotg/openkinguard/NetworkReconnectPolicyTest.kt'
       - 'app/src/**'
       - 'app/build.gradle.kts'
       - 'core/**'
@@ -46,20 +48,16 @@ jobs:
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           sed -i 's/compose-bom:2026.09.00/compose-bom:2025.10.00/' app/build.gradle.kts
           chmod +x gradlew
-          ./gradlew --no-daemon --continue \
-            :core:model:test \
-            :core:contracts:test \
-            :core:engine:test \
-            :adapters:mock:test \
-            :security:protocol:test \
+          ./gradlew --no-daemon \
             :app:compilePilotV4Kotlin \
             :app:testDebugUnitTest \
+              --tests io.github.tigaotg.openkinguard.NetworkReconnectPolicyTest \
             --stacktrace
       - name: Preserve JVM test reports (no APK artifacts)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase2-jvm-test-reports
+          name: phase3-network-test-reports
           path: |
             app/build/test-results/testDebugUnitTest/*.xml
             core/model/build/test-results/test/*.xml

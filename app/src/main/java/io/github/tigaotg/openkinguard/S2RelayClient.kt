@@ -15,6 +15,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 
 /** Distinguishes server-side routing errors from signed application denials. */
@@ -51,11 +52,18 @@ internal class S2RelayClient(
         private set
     @Volatile var connected = false
         private set
+    @Volatile var socketConnected = false
+        private set
+    @Volatile var lastCommunicationAtMillis = 0L
+        private set
+    @Volatile var lastFailureReason: String? = null
+        private set
+    @Volatile private var networkAvailable = true
     @Volatile private var familyCapabilities: Set<String> = emptySet()
     val supportsFamilyPairing: Boolean
         get() = connected && "family-peers-v1" in familyCapabilities &&
             "family-pair-v1" in familyCapabilities
-    private var reconnectDelaySeconds = 2L
+    private var reconnectAttempt = 0
     private var epoch = 0L
 
     companion object {
@@ -82,7 +90,7 @@ internal class S2RelayClient(
     }
 
     @Synchronized
-    fun configure(wssUrl: String, shouldConnect: Boolean) {
+    fun configure(wssUrl: String, shouldConnect: Boolean, hasDefaultNetwork: Boolean) {
         val parsed = if (shouldConnect) normalize(wssUrl) else ""
         if (endpoint == parsed && enabled == shouldConnect && (socket != null || !shouldConnect)) return
         epoch++
@@ -92,25 +100,42 @@ internal class S2RelayClient(
         familyCapabilities = emptySet()
         failPending("中继配置已变更")
         enabled = shouldConnect
+        networkAvailable = shouldConnect && hasDefaultNetwork
         endpoint = parsed
-        reconnectDelaySeconds = 2L
-        status = if (shouldConnect) "正在连接公网中继…" else "未启用公网中继"
+        reconnectAttempt = 0
+        lastFailureReason = null
+        status = when {
+            !shouldConnect -> "未启用公网中继"
+            !networkAvailable -> "等待系统默认网络"
+            else -> "正在连接公网中继…"
+        }
         onChanged()
-        if (shouldConnect) connect(epoch)
+        if (shouldConnect && networkAvailable) connect(epoch)
     }
 
     @Synchronized
     private fun connect(currentEpoch: Long) {
-        if (!enabled || currentEpoch != epoch || socket != null) return
+        if (!enabled || !networkAvailable || currentEpoch != epoch || socket != null) return
+        socketConnected = false
         status = "连接中：等待中继身份挑战"
         onChanged()
         val listener = object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) = Unit
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (currentEpoch != epoch || socket !== webSocket) {
+                    webSocket.close(1000, "stale network generation")
+                    return
+                }
+                socketConnected = true
+                lastCommunicationAtMillis = System.currentTimeMillis()
+                status = "WSS已连接，等待中继身份挑战"
+                onChanged()
+            }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
                     if (text.length > 24_000) throw IOException("中继消息过长")
                     val json = JSONObject(text)
+                    lastCommunicationAtMillis = System.currentTimeMillis()
                     when (json.getString("t")) {
                         "challenge" -> {
                             val nonce = unb64(json.getString("n"))
@@ -126,10 +151,12 @@ internal class S2RelayClient(
                             }
                             if (currentEpoch != epoch) return
                             connected = true
+                            reconnectAttempt = 0
+                            lastFailureReason = null
                             val capabilities = json.optJSONArray("caps")
                             familyCapabilities = (0 until (capabilities?.length() ?: 0))
                                 .mapNotNull { capabilities?.optString(it) }.toSet()
-                            reconnectDelaySeconds = 2L
+                            reconnectAttempt = 0
                             status = "公网中继已连接（已验证本机公钥）"
                             onChanged()
                         }
@@ -259,18 +286,45 @@ internal class S2RelayClient(
                              denied: Boolean = false) {
         if (currentEpoch != epoch || socket !== webSocket) return
         socket = null
+        socketConnected = false
         connected = false
         familyCapabilities = emptySet()
+        lastFailureReason = cause.take(160)
         failPending("公网通信中断：$cause")
-        status = if (denied) cause else "公网中继断开：${cause.take(80)}；稍后重连"
+        status = if (denied) cause else "公网中继断开：\${cause.take(80)}；稍后重连"
         onChanged()
-        if (enabled) {
-            // A deliberate owner revocation is not a network glitch. Probe
-            // infrequently so a later router-side restoration is discovered.
-            val delay = if (denied) 60L else reconnectDelaySeconds
-            reconnectDelaySeconds = if (denied) 60L else (delay * 2).coerceAtMost(60)
-            scheduler.schedule({ synchronized(this) { connect(currentEpoch) } }, delay, TimeUnit.SECONDS)
+        if (enabled && networkAvailable) {
+            // Owner revocation is deliberately probed slowly; transient network
+            // failures use capped equal-jitter exponential backoff.
+            val delay = if (denied) 60_000L else NetworkReconnectPolicy.delayMillis(
+                reconnectAttempt++, ThreadLocalRandom.current().nextDouble())
+            scheduler.schedule({
+                synchronized(this) { connect(currentEpoch) }
+            }, delay, TimeUnit.MILLISECONDS)
         }
+    }
+
+    /** Rebinds a new WebSocket to the current Android default network. */
+    @Synchronized
+    fun networkChanged(hasDefaultNetwork: Boolean) {
+        if (!enabled) return
+        networkAvailable = hasDefaultNetwork
+        epoch++
+        val currentEpoch = epoch
+        val old = socket
+        socket = null
+        old?.cancel()
+        socketConnected = false
+        connected = false
+        familyCapabilities = emptySet()
+        failPending("Android 默认网络已切换，旧中继会话已释放")
+        reconnectAttempt = 0
+        status = if (hasDefaultNetwork) "网络已切换，正在重新连接并重新认证"
+            else "当前没有默认网络，等待网络恢复"
+        lastFailureReason = if (hasDefaultNetwork) "DEFAULT_NETWORK_CHANGED"
+            else "NO_DEFAULT_NETWORK"
+        onChanged()
+        if (hasDefaultNetwork) connect(currentEpoch)
     }
 
     fun request(recipientFingerprint: String, frame: ByteArray,

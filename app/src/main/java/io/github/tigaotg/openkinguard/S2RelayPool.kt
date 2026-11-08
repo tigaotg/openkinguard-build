@@ -1,7 +1,13 @@
 package io.github.tigaotg.openkinguard
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 data class FamilyRelayPeer(val fingerprint: String, val slot: Int)
 
@@ -34,12 +40,31 @@ internal object FamilyRelayDiscovery {
  * any common live node; there is no central account or node-to-node federation.
  */
 internal class S2RelayPool(
+    context: Context,
     keys: AndroidDeviceKeyStore,
     onChanged: () -> Unit,
     acceptInbound: (ByteArray) -> ByteArray,
     acceptPairing: (Int, String, String) -> Boolean,
     acceptPairingCancel: (Int, String, String) -> Unit,
 ) {
+    private val connectivity = context.applicationContext.getSystemService(
+        Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val networkScheduler = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "okg-private-relay-network").apply { isDaemon = true }
+    }
+    private var networkCallbackRegistered = false
+    private var lastDefaultNetwork: Network? = null
+    private var pendingNetworkCheck: ScheduledFuture<*>? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = scheduleNetworkRecheck()
+        override fun onLost(network: Network) = scheduleNetworkRecheck()
+        override fun onCapabilitiesChanged(
+            network: Network, capabilities: android.net.NetworkCapabilities
+        ) {
+            if (connectivity.activeNetwork == network) scheduleNetworkRecheck()
+        }
+    }
+
     private val slots = List(3) { index ->
         S2RelayClient(keys, onChanged, acceptInbound,
             { sender, signed -> acceptPairing(index, sender, signed) },
@@ -94,10 +119,13 @@ internal class S2RelayPool(
         get() {
             val active = endpoints
             if (active.isEmpty()) return "未启用公网中继"
-            val count = slots.take(active.size).count { it.connected }
-            return "$count/${active.size} 个中继已连接；" +
-                slots.take(active.size).mapIndexed { index, client ->
-                    "节点${index + 1}：${client.status.take(86)}"
+            val selected = slots.take(active.size)
+            val sockets = selected.count { it.socketConnected }
+            val authenticated = selected.count { it.connected }
+            val network = if (lastDefaultNetwork == null) "无默认网络" else "默认网络可用"
+            return "$sockets/\${active.size} 个WSS连接，$authenticated/\${active.size} 个设备身份已认证（$network）；" +
+                selected.mapIndexed { index, client ->
+                    "节点\${index + 1}：\${client.status.take(100)}"
                 }.joinToString("；")
         }
 
@@ -105,9 +133,50 @@ internal class S2RelayPool(
     fun configure(rawEndpoints: String, shouldConnect: Boolean) {
         val parsed = if (shouldConnect) normalizeList(rawEndpoints) else emptyList()
         endpoints = parsed
+        if (shouldConnect) {
+            registerNetworkCallback()
+            lastDefaultNetwork = connectivity.activeNetwork
+        } else {
+            pendingNetworkCheck?.cancel(false)
+            pendingNetworkCheck = null
+            if (networkCallbackRegistered) {
+                runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+                networkCallbackRegistered = false
+            }
+            lastDefaultNetwork = null
+        }
+        val hasNetwork = shouldConnect && lastDefaultNetwork != null
         slots.forEachIndexed { index, client ->
-            if (index < parsed.size) client.configure(parsed[index], true)
-            else client.configure("", false)
+            if (index < parsed.size) client.configure(parsed[index], true, hasNetwork)
+            else client.configure("", false, false)
+        }
+    }
+
+    @Synchronized
+    private fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
+        runCatching {
+            connectivity.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered = true
+        }
+    }
+
+    private fun scheduleNetworkRecheck() {
+        synchronized(this) {
+            pendingNetworkCheck?.cancel(false)
+            pendingNetworkCheck = networkScheduler.schedule({
+                val changed = synchronized(this) {
+                    if (endpoints.isEmpty()) return@schedule
+                    val actual = connectivity.activeNetwork
+                    if (actual == lastDefaultNetwork) return@schedule
+                    lastDefaultNetwork = actual
+                    slots.take(endpoints.size).forEach { client ->
+                        client.networkChanged(actual != null)
+                    }
+                    true
+                }
+                if (changed) onChanged()
+            }, 900, TimeUnit.MILLISECONDS)
         }
     }
 
