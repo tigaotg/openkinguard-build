@@ -160,6 +160,48 @@ internal class S2PublicNostrCrypto(context: Context, private val deviceKeys: And
         "OpenKinGuard|nostr-contact|$fp|$npub|$epub|$issued|$exp"
             .toByteArray(Charsets.US_ASCII)
 
+    /** Compact card binds the static ECDH key to the QR-pinned device signing key. */
+    fun messageEncryptionCard(identity: LocalIdentity): String {
+        val fingerprint = deviceKeys.createOrLoad().fingerprint
+        val issued = System.currentTimeMillis()
+        val expires = issued + 24 * 60 * 60_000L
+        val body = messageEncryptionCardBody(fingerprint, identity.agreementPublic, issued, expires)
+        val signature = b64(deviceKeys.signNostrContactCard(body))
+        return listOf("1", fingerprint, identity.agreementPublic, issued.toString(),
+            expires.toString(), signature).joinToString(".")
+    }
+
+    /** Only the QR-pinned device signing key may authorize this ECDH public key. */
+    fun verifyMessageEncryptionCard(cardText: String, pinnedPeer: SavedPeer,
+                                    now: Long = System.currentTimeMillis()): String? = runCatching {
+        require(cardText.length in 200..400)
+        val fields = cardText.split('.')
+        require(fields.size == 6 && fields[0] == "1")
+        val fingerprint = fields[1]
+        val agreementPublic = fields[2]
+        val issued = fields[3].toLongOrNull() ?: error("Invalid encryption key issue time")
+        val expires = fields[4].toLongOrNull() ?: error("Invalid encryption key expiry")
+        require(fingerprint == pinnedPeer.peerFingerprint)
+        require(issued in (now - 48 * 60 * 60_000L)..(now + 60_000L))
+        require(expires in now..(issued + 24 * 60 * 60_000L))
+        require(agreementPublic.length in 70..300)
+        PairingQrProtocol.publicKey(unb64(agreementPublic))
+        val public = PairingQrProtocol.publicKey(unb64(pinnedPeer.peerPublicKeyBase64))
+        val proof = unb64(fields[5])
+        val body = messageEncryptionCardBody(fingerprint, agreementPublic, issued, expires)
+        Signature.getInstance("SHA256withECDSA").run {
+            initVerify(public)
+            update("OpenKinGuard|message-encryption-key|v1|".toByteArray(Charsets.US_ASCII))
+            update(body)
+            require(verify(proof)) { "Invalid encryption key signature" }
+        }
+        agreementPublic
+    }.getOrNull()
+
+    private fun messageEncryptionCardBody(fingerprint: String, agreementPublic: String,
+                                          issued: Long, expires: Long): ByteArray =
+        "$fingerprint|$agreementPublic|$issued|$expires".toByteArray(Charsets.US_ASCII)
+
     fun newReplyKey(): KeyPair = KeyPairGenerator.getInstance("EC").run {
         initialize(ECGenParameterSpec("secp256r1"))
         generateKeyPair()

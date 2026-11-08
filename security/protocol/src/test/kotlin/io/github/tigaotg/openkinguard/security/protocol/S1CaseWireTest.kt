@@ -5,50 +5,74 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.util.UUID
 import java.security.KeyPairGenerator
+import java.util.Base64
 
 class S1CaseWireTest {
     private val relation = UUID.randomUUID().toString()
     private val event = UUID.randomUUID().toString()
     private val messageId = UUID.randomUUID().toString()
+    private val sealed = S4MessageWire.SealedPayload(
+        Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(91) { 1 }),
+        Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(12) { 2 }),
+        Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(80) { 3 }),
+    )
+    private val card = listOf("1", "a".repeat(64), "b".repeat(120),
+        "1783000000000", "1783086400000", "c".repeat(88)).joinToString(".")
 
     private fun msg(kind: String, payload: ByteArray, id: String = event) = MessageEnvelope(
         1, MessageId(messageId), EventId(id), DeviceId("sender"), UserId("subject"),
         DeviceId("recipient"), 1L, 5000L, 0L, kind, payload)
 
-    @Test fun `exercise requests have a tiny strict payload`() {
+    private fun wire(kind: String, plaintext: ByteArray, id: String = event): MessageEnvelope =
+        msg(kind, if (kind in S1CaseWire.encryptedKinds)
+            S4MessageWire.encode(relation, sealed) else plaintext, id)
+
+    private fun decoded(kind: String, plaintext: ByteArray, id: String = event): S1CaseWire.Body {
+        val message = wire(kind, plaintext, id)
+        return if (kind in S1CaseWire.encryptedKinds)
+            S1CaseWire.bodyDecrypted(message, plaintext) else S1CaseWire.body(message)
+    }
+
+    @Test fun encryptedRequestsExposeOnlyRelationRouteUntilDecrypted() {
         for (kind in S1CaseWire.requestKinds) {
-            val message = msg(kind, S1CaseWire.request(relation, event))
-            val body = S1CaseWire.body(message)
-            assertEquals(relation, body.relationId)
-            assertEquals(event, body.eventId)
-            assertNull(body.respondingTo)
-            assertTrue(message.payload.size < 90)
+            val plaintext = S1CaseWire.request(relation, event)
+            val message = wire(kind, plaintext)
+            val routed = S1CaseWire.body(message)
+            assertEquals(relation, routed.relationId)
+            assertEquals(event, routed.eventId)
+            if (kind in S1CaseWire.encryptedKinds) {
+                assertNull(routed.respondingTo)
+                assertEquals(event, S1CaseWire.bodyDecrypted(message, plaintext).eventId)
+                assertTrue(message.payload.size < 512)
+            }
         }
     }
 
-    @Test fun `responses are correlated with exact message`() {
+    @Test fun encryptedResponsesAreCorrelatedAfterDecryption() {
         for (kind in S1CaseWire.responseKinds) {
-            val payload = if (kind == S1CaseWire.PROFILE_REPLY)
+            val plaintext = if (kind == S1CaseWire.PROFILE_REPLY)
                 S1CaseWire.profileResponse(relation, event, messageId, "红米手机")
             else S1CaseWire.response(relation, event, messageId)
-            val body = S1CaseWire.body(msg(kind, payload))
+            val body = decoded(kind, plaintext)
             assertEquals(messageId, body.respondingTo)
+            assertEquals(relation, body.relationId)
         }
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun `different event header rejected`() {
-        S1CaseWire.body(msg(S1CaseWire.SOS, S1CaseWire.request(relation, event),
-            UUID.randomUUID().toString()))
+    fun differentEventHeaderRejectedAfterDecryption() {
+        val message = wire(S1CaseWire.SOS, S1CaseWire.request(relation, event),
+            UUID.randomUUID().toString())
+        S1CaseWire.bodyDecrypted(message, S1CaseWire.request(relation, event))
     }
 
-    @Test fun `takeover first claimant wins and same claimant is idempotent`() {
+    @Test fun takeoverFirstClaimantWinsAndSameClaimantIsIdempotent() {
         assertTrue(S1CaseWire.claimDecision(null, "A"))
         assertTrue(S1CaseWire.claimDecision("A", "A"))
         assertFalse(S1CaseWire.claimDecision("A", "B"))
     }
 
-    @Test fun `response kinds enforce protocol progression`() {
+    @Test fun responseKindsEnforceProtocolProgression() {
         assertEquals(setOf(S1CaseWire.RECEIPT), S1CaseWire.expectedResponse(S1CaseWire.SOS))
         assertEquals(setOf(S1CaseWire.ACCEPT, S1CaseWire.REJECT),
             S1CaseWire.expectedResponse(S1CaseWire.CLAIM))
@@ -59,105 +83,116 @@ class S1CaseWireTest {
             S1CaseWire.expectedResponse(S1CaseWire.PROFILE))
     }
 
-    @Test fun `signed full exercise frame survives bounded LAN carrier`() {
+    @Test fun signedEncryptedExerciseFrameSurvivesBoundedLanCarrier() {
         val pair = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
-        val message = msg(S1CaseWire.SOS, S1CaseWire.request(relation, event))
+        val plain = S1CaseWire.request(relation, event, 1_783_000_000_000L, "家人手机")
+        val message = wire(S1CaseWire.SOS, plain)
         val signature = SignedProtocol.sign(message, pair.private)
         val decoded = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(message, signature)))
-        assertEquals(event, S1CaseWire.body(decoded.message).eventId)
+        assertEquals(relation, S1CaseWire.body(decoded.message).relationId)
+        assertEquals(event, S1CaseWire.bodyDecrypted(decoded.message, plain).eventId)
         assertTrue(SignedProtocol.verify(decoded.message, decoded.signature, pair.public))
     }
 
-    @Test fun `signed checkin and correlated receipt survive LAN carrier`() {
+    @Test fun signedCheckinAndCorrelatedReceiptSurviveLanCarrier() {
         val sender = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
         val receiver = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
-        val checkin = msg(S1CaseWire.CHECKIN, S1CaseWire.request(relation, event))
+        val checkinPlain = S1CaseWire.request(relation, event)
+        val checkin = wire(S1CaseWire.CHECKIN, checkinPlain)
         val sent = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(
             checkin, SignedProtocol.sign(checkin, sender.private))))
         assertTrue(SignedProtocol.verify(sent.message, sent.signature, sender.public))
         assertEquals(relation, S1CaseWire.body(sent.message).relationId)
+        assertEquals(event, S1CaseWire.bodyDecrypted(sent.message, checkinPlain).eventId)
 
-        val receiptId = UUID.randomUUID().toString()
-        val receipt = MessageEnvelope(1, MessageId(receiptId), EventId(event),
-            DeviceId("receiver"), UserId("subject"), DeviceId("sender"), 2L,
-            5000L, 0L, S1CaseWire.CHECKIN_RECEIPT,
-            S1CaseWire.response(relation, event, sent.message.messageId.value))
+        val receiptPlain = S1CaseWire.response(relation, event, sent.message.messageId.value)
+        val receipt = wire(S1CaseWire.CHECKIN_RECEIPT, receiptPlain)
         val returned = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(
             receipt, SignedProtocol.sign(receipt, receiver.private))))
         assertTrue(SignedProtocol.verify(returned.message, returned.signature, receiver.public))
         assertEquals(sent.message.messageId.value,
-            S1CaseWire.body(returned.message).respondingTo)
+            S1CaseWire.bodyDecrypted(returned.message, receiptPlain).respondingTo)
         assertEquals(setOf(returned.message.payloadKind),
             S1CaseWire.expectedResponse(sent.message.payloadKind))
     }
 
-    @Test fun `nickname is transported in signed correlated profile reply`() {
+    @Test fun profileExchangeCarriesSignedEncryptionCard() {
+        val request = S1CaseWire.body(msg(S1CaseWire.PROFILE,
+            S1CaseWire.request(relation, event, encryptionCard = card)))
+        assertEquals(card, request.encryptionCard)
+        val response = S1CaseWire.body(msg(S1CaseWire.PROFILE_REPLY,
+            S1CaseWire.profileResponse(relation, event, messageId, "红米手机", card)))
+        assertEquals(card, response.encryptionCard)
+        assertEquals("红米手机", response.profileNickname)
+    }
+
+    @Test fun nicknameIsTransportedInSignedCorrelatedProfileReply() {
         val pair = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
         val name = "荣耀7X · 家人"
         val message = msg(S1CaseWire.PROFILE_REPLY,
-            S1CaseWire.profileResponse(relation, event, messageId, name))
+            S1CaseWire.profileResponse(relation, event, messageId, name, card))
         val sent = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(
             message, SignedProtocol.sign(message, pair.private))))
         assertTrue(SignedProtocol.verify(sent.message, sent.signature, pair.public))
         val parsed = S1CaseWire.body(sent.message)
         assertEquals(messageId, parsed.respondingTo)
         assertEquals(name, parsed.profileNickname)
+        assertEquals(card, parsed.encryptionCard)
         assertEquals(relation, parsed.relationId)
         assertEquals(event, parsed.eventId)
     }
 
-    @Test fun `malformed or control character nicknames are rejected`() {
+    @Test fun malformedOrControlCharacterNicknamesAndCardsAreRejected() {
         assertTrue(runCatching { S1CaseWire.profileResponse(relation, event, messageId,
             "伪装\n名称") }.isFailure)
         assertTrue(runCatching { S1CaseWire.profileResponse(relation, event, messageId,
             "这是一个超过十八个字符的很长很长很长的设备名称") }.isFailure)
         assertTrue(runCatching { S1CaseWire.body(msg(S1CaseWire.PROFILE_REPLY,
             S1CaseWire.response(relation, event, messageId))) }.isFailure)
+        assertTrue(runCatching { S1CaseWire.request(relation, event, encryptionCard = "not-a-card") }.isFailure)
     }
 
-    @Test fun `signed event creation time survives wire and permits legacy request parsing`() {
+    @Test fun signedEventCreationTimeSurvivesDecryptedWire() {
         val created = 1_782_900_000_123L
         for (kind in listOf(S1CaseWire.SOS, S1CaseWire.CHECKIN)) {
-            val modern = S1CaseWire.body(msg(kind,
-                S1CaseWire.request(relation, event, created)))
-            assertEquals(created, modern.eventCreatedAtMillis)
-            assertEquals(event, modern.eventId)
-            assertNull(S1CaseWire.body(msg(kind,
-                S1CaseWire.request(relation, event))).eventCreatedAtMillis)
+            val body = decoded(kind, S1CaseWire.request(relation, event, created))
+            assertEquals(created, body.eventCreatedAtMillis)
+            assertEquals(event, body.eventId)
+            assertNull(decoded(kind, S1CaseWire.request(relation, event)).eventCreatedAtMillis)
         }
     }
 
-    @Test fun `event time cannot be smuggled into a claim or malformed`() {
+    @Test fun eventTimeCannotBeSmuggledIntoClaimOrMalformed() {
         val forbidden = S1CaseWire.request(relation, event, 100L)
-        assertTrue(runCatching { S1CaseWire.body(msg(S1CaseWire.CLAIM, forbidden)) }.isFailure)
+        assertTrue(runCatching { decoded(S1CaseWire.CLAIM, forbidden) }.isFailure)
         for (badTime in listOf("0", "-1", "001", "999999999999999999999999", "nan")) {
             val invalid = "R|$relation|$event|$badTime".toByteArray(Charsets.UTF_8)
-            assertTrue(runCatching { S1CaseWire.body(msg(S1CaseWire.SOS, invalid)) }.isFailure)
+            assertTrue(runCatching { decoded(S1CaseWire.SOS, invalid) }.isFailure)
         }
     }
 
-    @Test fun `signed events carry source nickname at point of delivery`() {
+    @Test fun signedEventsCarrySourceNicknameAtPointOfDelivery() {
         for (kind in listOf(S1CaseWire.SOS, S1CaseWire.CHECKIN)) {
-            val body = S1CaseWire.body(msg(kind,
-                S1CaseWire.request(relation, event, 1_783_000_000_000L, "张奶奶的手机")))
+            val body = decoded(kind, S1CaseWire.request(relation, event,
+                1_783_000_000_000L, "张奶奶的手机"))
             assertEquals("张奶奶的手机", body.senderNickname)
             assertEquals(1_783_000_000_000L, body.eventCreatedAtMillis)
         }
         for (kind in listOf(S1CaseWire.CLAIM, S1CaseWire.CLOSE)) {
-            val body = S1CaseWire.body(msg(kind,
-                S1CaseWire.request(relation, event, senderNickname = "家人助手")))
+            val body = decoded(kind, S1CaseWire.request(relation, event,
+                senderNickname = "家人助手"))
             assertEquals("家人助手", body.senderNickname)
             assertNull(body.eventCreatedAtMillis)
         }
     }
 
-    @Test fun `nicknames are strict and cannot be confused with source timestamps`() {
+    @Test fun nicknamesAreStrictAndCannotBeConfusedWithSourceTimestamps() {
         val incorrect = listOf("R|$relation|$event|N:YWJj",
             "R|$relation|$event|123|N:", "R|$relation|$event|123|N:###",
             "R|$relation|$event|123|N:YWJj|extra")
         incorrect.forEach { payload ->
-            assertTrue(runCatching { S1CaseWire.body(msg(S1CaseWire.SOS,
-                payload.toByteArray(Charsets.UTF_8))) }.isFailure)
+            assertTrue(runCatching { decoded(S1CaseWire.SOS,
+                payload.toByteArray(Charsets.UTF_8)) }.isFailure)
         }
         assertTrue(runCatching { S1CaseWire.request(relation, event,
             senderNickname = "恶意\n名称") }.isFailure)

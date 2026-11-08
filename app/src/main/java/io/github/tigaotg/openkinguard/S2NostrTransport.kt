@@ -10,6 +10,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
+import io.github.tigaotg.openkinguard.security.protocol.S4MessageWire
 import java.net.URI
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
@@ -139,6 +140,22 @@ internal class S2NostrTransport(
         get() = synchronized(this) { sockets.any { it.ready } }
 
     fun ownRemoteContactCard(): JSONObject = crypto.card(identity)
+
+    /** Exchanged only inside the pinned-key-signed PROFILE command over the private path. */
+    fun ownMessageEncryptionCard(): String = crypto.messageEncryptionCard(identity)
+
+    fun messageEncryptionPublic(card: String, peer: SavedPeer): String? =
+        crypto.verifyMessageEncryptionCard(card, peer)
+
+    fun sealCasePayload(plaintext: ByteArray, recipientPublic: String,
+                        aad: ByteArray): S4MessageWire.SealedPayload {
+        val sealed = crypto.seal(plaintext, recipientPublic, aad)
+        return S4MessageWire.SealedPayload(sealed.ephemeralKey, sealed.nonce, sealed.ciphertext)
+    }
+
+    fun openCasePayload(sealed: S4MessageWire.SealedPayload, aad: ByteArray): ByteArray =
+        crypto.open(S2PublicNostrCrypto.Sealed(sealed.ephemeralPublicKey,
+            sealed.nonce, sealed.ciphertext), identity.agreementPrivate, aad)
 
     fun sealRemotePairing(bytes: ByteArray, recipientPublic: String,
                           aad: ByteArray): JSONObject =

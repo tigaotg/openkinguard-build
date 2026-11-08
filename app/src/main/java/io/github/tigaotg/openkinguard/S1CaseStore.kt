@@ -140,6 +140,8 @@ data class ExerciseState(
     val remoteAssistBlockedRelations: Set<String> = emptySet(),
     /** Separate explicit consent for persistent UDP/P2P listening; disabled by default. */
     val directUdpListenerEnabled: Boolean = false,
+    /** Pinned peer ECDH cards, encrypted at rest with this existing history database. */
+    val peerEncryptionCards: Map<String, String> = emptyMap(),
 )
 
 /** Transactional encrypted local exercise log. Identity key and pairings are never changed. */
@@ -373,7 +375,14 @@ internal class S1CaseStore(context: Context) {
                 (root.optJSONArray("remoteAssistBlockedRelations") ?: JSONArray()).let { ids ->
                     (0 until ids.length()).map { ids.getString(it) }.toSet()
                 },
-            directUdpListenerEnabled = root.optBoolean("directUdpListenerEnabled", false)
+            directUdpListenerEnabled = root.optBoolean("directUdpListenerEnabled", false),
+            peerEncryptionCards = (root.optJSONObject("peerEncryptionCards") ?: JSONObject()).let { cards ->
+                cards.keys().asSequence().mapNotNull { fingerprint ->
+                    val card = cards.optString(fingerprint)
+                    if (fingerprint.matches(Regex("[0-9a-f]{64}")) && card.length in 200..400)
+                        fingerprint to card else null
+                }.toMap()
+            }
         )
     }
 
@@ -473,6 +482,11 @@ internal class S1CaseStore(context: Context) {
         root.put("remoteAssistBlockedRelations",
             JSONArray(state.remoteAssistBlockedRelations.toList()))
         root.put("directUdpListenerEnabled", state.directUdpListenerEnabled)
+        root.put("peerEncryptionCards", JSONObject().apply {
+            state.peerEncryptionCards.entries.take(64).forEach { (fingerprint, card) ->
+                put(fingerprint, card)
+            }
+        })
         root.put("receivedLocations", JSONArray().apply {
             state.receivedLocations.takeLast(200).forEach { fix ->
                 put(JSONObject().put("relation", fix.relationId)
