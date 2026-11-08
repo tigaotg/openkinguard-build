@@ -191,7 +191,6 @@ internal class S2PublicNostrCrypto(context: Context, private val deviceKeys: And
         val body = messageEncryptionCardBody(fingerprint, agreementPublic, issued, expires)
         Signature.getInstance("SHA256withECDSA").run {
             initVerify(public)
-            update("OpenKinGuard|message-encryption-key|v1|".toByteArray(Charsets.US_ASCII))
             update(body)
             require(verify(proof)) { "Invalid encryption key signature" }
         }
@@ -200,7 +199,8 @@ internal class S2PublicNostrCrypto(context: Context, private val deviceKeys: And
 
     private fun messageEncryptionCardBody(fingerprint: String, agreementPublic: String,
                                           issued: Long, expires: Long): ByteArray =
-        "$fingerprint|$agreementPublic|$issued|$expires".toByteArray(Charsets.US_ASCII)
+        ("OpenKinGuard|message-encryption-key|v1|" +
+            "$fingerprint|$agreementPublic|$issued|$expires").toByteArray(Charsets.US_ASCII)
 
     fun newReplyKey(): KeyPair = KeyPairGenerator.getInstance("EC").run {
         initialize(ECGenParameterSpec("secp256r1"))
