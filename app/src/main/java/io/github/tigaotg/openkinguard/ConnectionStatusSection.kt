@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
@@ -58,21 +59,16 @@ internal data class ConnectionStatusUiState(
         appendLine("局域网服务：${if (lanListening) "监听中" else "未监听"}；TCP：$tcpListenerStatus")
         appendLine("后台持续监听：${if (backgroundListening) "开启" else "未开启"}；$backgroundStatus")
         appendLine("局域网发现：$discoveredNodeCount 台；验签关系 $authenticatedLanRelationCount 条")
-        if (discoveryError.isNotBlank()) appendLine("发现错误：${discoveryError.take(120)}")
         appendLine("家庭 WSS 中继：${if (privateRelayEnabled) "已启用" else "未启用"}")
         privateRelays.forEach { node ->
             appendLine("  节点 ${node.index}：Socket=${node.socketConnected}；身份验签=${node.identityAuthenticated}；" +
-                "暂存能力=${node.offlineSpoolSupported}；状态=${node.status.take(80)}")
-            node.lastFailureReason?.takeIf { it.isNotBlank() }?.let {
-                appendLine("    最近失败：${it.take(100)}")
-            }
+                "家庭能力=${node.familyPairingSupported}；离线密文暂存=${node.offlineSpoolSupported}；" +
+                "最近通信=${ageLabel(node.lastCommunicationAtMillis, updatedAtMillis)}")
         }
         appendLine("公共 Nostr 信令：${if (publicSignalEnabled) "已启用" else "未启用"}；" +
             "${if (publicSignalConnected) "已连接" else "未确认连接"}")
-        appendLine("  $publicSignalStatus")
         appendLine("UDP P2P：${if (directEnabled) "已启用" else "未启用"}；" +
             "${if (directActive) "本机 Socket 活跃" else "本机 Socket 未活跃"}")
-        appendLine("  $directStatus")
         appendLine("家人设备：")
         peers.forEach { peer ->
             appendLine("  ${peer.displayName}（${peer.roleDescription}）：${ConnectionStatusPolicy.reachabilityLabel(

@@ -712,7 +712,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             var lastProbeElapsed = 0L
             while (true) {
                 val now = SystemClock.elapsedRealtime()
-                if (now - lastProbeElapsed >= 30_000L) {
+                if (lastProbeElapsed == 0L || now - lastProbeElapsed >= 30_000L) {
                     withContext(Dispatchers.IO) {
                         runCatching {
                             manager.probeAsync().get(15, java.util.concurrent.TimeUnit.SECONDS)
