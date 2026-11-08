@@ -2292,13 +2292,148 @@ class S1GuardManager(context: Context) {
         }) to true
     }
 
-    /** Only an explicitly created SOS can enter this finite foreground retry loop. */
+    /** Creates and durably stores one immutable signed ciphertext frame before attempting transport. */
+    private fun enqueueCaseOutbox(peer: SavedPeer, node: DiscoveredNode?,
+                                  kind: String, eventId: String): DeliveryOutboxEntry {
+        require(kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN, S1CaseWire.CLOSE))
+        val now = System.currentTimeMillis()
+        val existing = store.snapshot().deliveryOutbox.firstOrNull {
+            it.eventId == eventId && it.relationId == peer.relationId &&
+                it.peerFingerprint == peer.peerFingerprint && it.payloadKind == kind &&
+                !S4DeliveryPolicy.isExpired(it.expiresAt, now)
+        }
+        if (existing != null) return existing
+
+        ensurePeerEncryptionCard(peer, node)
+        val state = store.snapshot()
+        val sourceTime = when (kind) {
+            S1CaseWire.SOS -> state.cases.firstOrNull { it.ownSos && it.eventId == eventId }?.createdAt
+            S1CaseWire.CHECKIN -> state.checkins.firstOrNull { it.own && it.eventId == eventId }?.timestamp
+            else -> null
+        }
+        val body = S1CaseWire.request(peer.relationId, eventId, sourceTime, ownNickname())
+        val signed = signedMessage(peer, kind, eventId, body,
+            validForMillis = S4DeliveryPolicy.MESSAGE_TTL_MILLIS)
+        val frame = LanTestWire.encode(signed)
+        val entry = DeliveryOutboxEntry(
+            messageId = signed.message.messageId.value,
+            eventId = eventId,
+            relationId = peer.relationId,
+            peerFingerprint = peer.peerFingerprint,
+            payloadKind = kind,
+            createdAt = signed.message.createdEpochMillis,
+            expiresAt = signed.message.expiresEpochMillis,
+            frameBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(frame),
+        )
+        return store.update { current ->
+            val stillPending = current.deliveryOutbox.firstOrNull {
+                it.eventId == eventId && it.relationId == peer.relationId &&
+                    it.peerFingerprint == peer.peerFingerprint && it.payloadKind == kind &&
+                    !S4DeliveryPolicy.isExpired(it.expiresAt, System.currentTimeMillis())
+            }
+            if (stillPending != null) current to stillPending
+            else {
+                val nowInside = System.currentTimeMillis()
+                val retained = current.deliveryOutbox.filter {
+                    !S4DeliveryPolicy.isExpired(it.expiresAt, nowInside) &&
+                        !(it.eventId == eventId && it.relationId == peer.relationId &&
+                            it.peerFingerprint == peer.peerFingerprint && it.payloadKind == kind)
+                }
+                require(retained.size < S4DeliveryPolicy.MAX_OUTBOX_ENTRIES) {
+                    "本机可靠投递队列已满；请先恢复网络并完成待投递消息"
+                }
+                current.copy(deliveryOutbox =
+                    (retained + entry).takeLast(S4DeliveryPolicy.MAX_OUTBOX_ENTRIES)) to entry
+            }
+        }
+    }
+
+    /** Persist retry state; relay acceptance is recorded separately from device receipt. */
+    private fun markOutboxAttempt(messageId: String, relayAccepted: Boolean) {
+        store.update { state ->
+            val now = System.currentTimeMillis()
+            val target = state.deliveryOutbox.firstOrNull { it.messageId == messageId }
+                ?: return@update state to Unit
+            val count = target.attemptCount + 1
+            val acceptedAt = if (relayAccepted) now else target.relayAcceptedAt
+            val updatedQueue = state.deliveryOutbox.map { entry ->
+                if (entry.messageId == messageId) entry.copy(
+                    attemptCount = count,
+                    nextAttemptAt = now + S4DeliveryPolicy.retryDelayMillis(count),
+                    relayAcceptedAt = acceptedAt,
+                ) else entry
+            }
+            var updated = state.copy(deliveryOutbox = updatedQueue)
+            if (relayAccepted) {
+                val progress = DeliveryProgress(relayAcceptedAt = now)
+                when (target.payloadKind) {
+                    S1CaseWire.SOS, S1CaseWire.CLOSE -> updated = updated.copy(
+                        cases = updated.cases.map { item ->
+                            if (item.ownSos && item.eventId == target.eventId) {
+                                val previous = item.deliveryProgress[target.relationId] ?: DeliveryProgress()
+                                item.copy(deliveryProgress = item.deliveryProgress +
+                                    (target.relationId to previous.copy(
+                                        relayAcceptedAt = maxOf(previous.relayAcceptedAt, progress.relayAcceptedAt))))
+                            } else item
+                        })
+                    S1CaseWire.CHECKIN -> updated = updated.copy(
+                        checkins = updated.checkins.map { item ->
+                            if (item.own && item.eventId == target.eventId) {
+                                val previous = item.deliveryProgress[target.relationId] ?: DeliveryProgress()
+                                item.copy(deliveryProgress = item.deliveryProgress +
+                                    (target.relationId to previous.copy(
+                                        relayAcceptedAt = maxOf(previous.relayAcceptedAt, progress.relayAcceptedAt))))
+                            } else item
+                        })
+                }
+            }
+            updated to Unit
+        }
+    }
+
+    /** Sends the persisted frame, never regenerating a nonce or signature on a retry. */
+    private fun deliverCaseOutbox(peer: SavedPeer, node: DiscoveredNode?,
+                                  kind: String, eventId: String): String? {
+        val entry = enqueueCaseOutbox(peer, node, kind, eventId)
+        val now = System.currentTimeMillis()
+        if (S4DeliveryPolicy.isExpired(entry.expiresAt, now)) {
+            store.update { state ->
+                state.copy(deliveryOutbox = state.deliveryOutbox.filterNot {
+                    it.messageId == entry.messageId
+                }) to Unit
+            }
+            return null
+        }
+        if (!S4DeliveryPolicy.isDue(entry.nextAttemptAt, entry.expiresAt, now)) return null
+        val frame = Base64.getUrlDecoder().decode(entry.frameBase64)
+        try {
+            val (replyBytes, usedRelay, directEndpoint) = sendSignedFrame(peer, node, frame, 3000,
+                allowTemporaryQueue = store.snapshot().relayOfflineQueueEnabled &&
+                    kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN))
+            val reply = LanTestWire.decode(replyBytes)
+            require(reply.message.payloadKind in S1CaseWire.expectedResponse(kind)) {
+                "签名回执类型与可靠投递消息不匹配"
+            }
+            verifyReply(reply, peer, kind, eventId, entry.messageId,
+                if (usedRelay) System.currentTimeMillis() else entry.relayAcceptedAt)
+            if (usedRelay) relayVerifiedAt[peer.relationId] = System.currentTimeMillis()
+            directEndpoint?.let { direct.confirmSignedReply(peer.peerFingerprint, it) }
+            return reply.message.payloadKind
+        } catch (queued: RelayQueuedException) {
+            markOutboxAttempt(entry.messageId, relayAccepted = true)
+            throw queued
+        } catch (error: Exception) {
+            markOutboxAttempt(entry.messageId, relayAccepted = false)
+            throw error
+        }
+    }
+
+    /** Local encrypted outbox survives process death; optional relay RAM queue is not the source of truth. */
     fun deliverPending(): List<String> {
         val errors = mutableListOf<String>()
         val state = store.snapshot()
         val currentOwn = state.cases.filter { it.ownSos && it.supersededBy.isBlank() &&
             it.status == ExerciseStatus.OPEN }.maxByOrNull { it.createdAt }
-        // Old closures must still reach devices after reconnect even if a newer SOS exists.
         val cutoff = System.currentTimeMillis() - state.retentionDays * 86_400_000L
         val closedToSync = state.cases.filter { it.ownSos &&
             it.status == ExerciseStatus.CLOSED && it.createdAt >= cutoff }.takeLast(20)
@@ -2309,24 +2444,30 @@ class S1GuardManager(context: Context) {
             relations().none { it.role == PairingRole.SUBJECT }) {
             return listOf("没有已授权帮助者：本机事件不会发给他人。双向求救需另一条反向帮助关系")
         }
+
+        val activeEventIds = (cases.map { it.eventId } + listOfNotNull(latestCheckin?.eventId)).toSet()
+        store.update { current ->
+            current.copy(deliveryOutbox = current.deliveryOutbox.filter {
+                it.eventId in activeEventIds &&
+                    !S4DeliveryPolicy.isExpired(it.expiresAt, System.currentTimeMillis())
+            }) to Unit
+        }
+
         for (item in cases) {
+            val closing = item.status == ExerciseStatus.CLOSED
+            val kind = if (closing) S1CaseWire.CLOSE else S1CaseWire.SOS
             for (peer in relations().filter { it.role == PairingRole.SUBJECT }) {
-                val closing = item.status == ExerciseStatus.CLOSED
                 if (closing && peer.relationId in item.closedSyncedRelations) continue
                 if (!closing && peer.relationId in item.deliveredRelations) continue
                 val endpoint = verified[peer.relationId]?.let { nodes[it] }
-                if (endpoint == null && !relayConnected() &&
-                    !direct.hasCandidates(peer.peerFingerprint)) {
-                    errors += "对方无局域网、已加密直连候选或私人中继通道"; continue
-                }
-                if (!attempt(item.eventId, peer.relationId, closing)) {
-                    if (!closing) errors += "SOS已达到6次自动重试上限，可点手动重试"
-                    continue
-                }
-                try { request(peer, endpoint,
-                    if (closing) S1CaseWire.CLOSE else S1CaseWire.SOS, item.eventId) }
-                catch (e: Exception) {
-                    errors += "送达未确认：${CommandFailureExplainer.explain(e).message}"
+                try {
+                    deliverCaseOutbox(peer, endpoint, kind, item.eventId)
+                } catch (error: Exception) {
+                    val detail = if (error is RelayQueuedException)
+                        "中继已接收暂存，但尚未收到手机签名回执"
+                    else "SOS/结案尚未确认送达：" +
+                        CommandFailureExplainer.explain(error).message
+                    errors += detail
                 }
             }
         }
@@ -2335,14 +2476,14 @@ class S1GuardManager(context: Context) {
                 DeviceActionPolicy.canDeliverCheckin(checkin.targetRelationId, it.relationId) }) {
                 if (peer.relationId in checkin.deliveredRelations) continue
                 val endpoint = verified[peer.relationId]?.let { nodes[it] }
-                if (endpoint == null && !relayConnected() &&
-                    !direct.hasCandidates(peer.peerFingerprint)) {
-                    errors += "报平安等待局域网、UDP直连候选或私人中继"; continue
-                }
-                if (!attemptCheckin(checkin.eventId, peer.relationId)) continue
-                try { request(peer, endpoint, S1CaseWire.CHECKIN, checkin.eventId) }
-                catch (error: Exception) {
-                    errors += "报平安尚未收到签名回执：${CommandFailureExplainer.explain(error).message}"
+                try {
+                    deliverCaseOutbox(peer, endpoint, S1CaseWire.CHECKIN, checkin.eventId)
+                } catch (error: Exception) {
+                    val detail = if (error is RelayQueuedException)
+                        "中继已接收报平安暂存，但尚未收到手机签名回执"
+                    else "报平安尚未收到签名回执：" +
+                        CommandFailureExplainer.explain(error).message
+                    errors += detail
                 }
             }
         }
@@ -3046,7 +3187,8 @@ class S1GuardManager(context: Context) {
     }
 
     private fun signedMessage(peer: SavedPeer, kind: String, eventId: String,
-                              body: ByteArray): SignedEnvelope {
+                              body: ByteArray,
+                              validForMillis: Long? = null): SignedEnvelope {
         val own = keys.createOrLoad().fingerprint
         val seqKey = peer.relationId + "|" + own
         val next = store.update { state ->
@@ -3059,7 +3201,7 @@ class S1GuardManager(context: Context) {
         // SOS/check-in packets may spend up to five minutes in one relay's
         // voluntary RAM queue, after up to one minute searching other nodes.
         // Other commands (especially GPS) retain the shorter two-minute TTL.
-        val validFor = if (kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN)) 420_000L
+        val validFor = validForMillis ?: if (kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN)) 420_000L
             else 120_000L
         val senderId = DeviceId("okg-" + own)
         val recipientId = DeviceId("okg-" + peer.peerFingerprint)
