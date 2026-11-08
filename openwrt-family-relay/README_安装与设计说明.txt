@@ -173,3 +173,18 @@ TCP 9443 的精确规则；不要开放 LuCI 管理端口80/443、SSH22 等其�
 
 【后续最需要你提供】路由器设备信息与存储、自有域名/IPv6 可达性、两台手机指纹。
 无需提供路由器密码、TLS 私钥或其他敏感凭据。
+
+
+OpenKinGuard 0.3.8 离线暂存说明（2026-11-08）
+家庭中继仅缓存加密后的 SOS/报平安/家属确认消息，最长5分钟。节点只负责转发，
+不能解密正文，也不能代表手机或家属签发已收到/已确认回执。发送方APP保留7天内的本地加密补投队列。
+新的持久化队列配置：option queue_storage 'tmpfs'（默认，procd服务重启可恢复，路由器断电丢失）。
+'memory' 仅运行内存；'flash' 使用 /overlay/openkinguard-relay/outbox，可跨路由器重启，
+但会增加闪存写入和设备指纹路由元数据的落盘暴露。请仅在有需要时明确启用flash，
+路由器必须保证证书、密钥和队列目录只有受信任管理员可读取。目录权限0700，文件权限0600。
+举例（管理员手工执行，不自动更改）：
+uci set openkinguard-relay.main.queue_storage='flash'
+uci commit openkinguard-relay
+/etc/init.d/openkinguard-relay restart
+恢复默认：uci set openkinguard-relay.main.queue_storage='tmpfs'; uci commit openkinguard-relay; /etc/init.d/openkinguard-relay restart
+仅将 S4 加密报文落盘；旧格式如有暂存，只在运行内存中保留。节点重启或损坏导致的暂存丢失由APP重试兜底。

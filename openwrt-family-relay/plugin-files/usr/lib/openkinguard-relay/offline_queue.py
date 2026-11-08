@@ -111,7 +111,9 @@ class OfflineQueueStore:
             if not isinstance(orig_id, str) or not 1 <= len(orig_id) <= 70 or (
                     isinstance(expires, bool) or not isinstance(expires, (float, int))):
                 raise ValueError("invalid queue correlation or expiry")
-            if expires <= time.time():
+            if expires <= time.time() or time.time() < 1_577_836_800:
+                # OpenWrt may boot before NTP has established wall-clock time.
+                # Drop uncertain queued alerts rather than replay ancient SOS.
                 self.delete(identifier)
                 continue
             if expires > time.time() + TTL + 5:
@@ -138,6 +140,11 @@ class OfflineQueueStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temp, path)
+            directory_fd = os.open(self.directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             if os.path.exists(temp):
                 os.unlink(temp)

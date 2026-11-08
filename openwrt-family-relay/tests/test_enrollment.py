@@ -161,7 +161,9 @@ class RevocationSafetyTests(unittest.TestCase):
         self.assertEqual(calls[-1], ("/etc/init.d/openkinguard-relay", "restart"))
 
     def test_installed_version_is_read_from_runtime_marker(self):
-        self.assertEqual(manage_join.installed_version(), "0.3.7")
+        self.assertEqual(manage_join.installed_version(),
+            (pathlib.Path(__file__).resolve().parents[1] /
+             "plugin-files/usr/lib/openkinguard-relay/VERSION").read_text().strip())
 
 
 class ScriptedJoinSocket:

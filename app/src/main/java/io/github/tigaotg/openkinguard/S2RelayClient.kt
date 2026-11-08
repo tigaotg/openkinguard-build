@@ -22,8 +22,8 @@ import java.util.concurrent.TimeUnit
 internal class RelayRouteException(val relayCode: String, message: String) : IOException(message)
 
 /** The relay only accepted an ephemeral queue item; no recipient ACK was received. */
-internal class RelayQueuedException : IOException(
-    "对方暂未上线：通知仅在该中继内存中暂存（最多5分钟），尚未收到设备签名回执；请勿视为已送达")
+internal class RelayQueuedException(survivesServiceRestart: Boolean) : IOException(
+    FamilyRelayQueuePolicy.queuedDescription(survivesServiceRestart))
 
 /** Optional, authenticated, reconnecting WSS transport. This is not a wake-up guarantee. */
 internal class S2RelayClient(
@@ -262,7 +262,8 @@ internal class S2RelayClient(
                             pendingPeers.remove(id)?.completeExceptionally(error)
                         }
                         "queued" -> pending.remove(json.getString("id"))
-                            ?.completeExceptionally(RelayQueuedException())
+                            ?.completeExceptionally(RelayQueuedException(
+                                "family-offline-spool-v1" in familyCapabilities))
                         else -> throw IOException("未知中继消息")
                     }
                     // Only a recognized, structurally valid relay frame advances

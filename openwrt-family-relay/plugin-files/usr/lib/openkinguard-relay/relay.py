@@ -111,8 +111,14 @@ class Relay:
         self.clients: dict[str, ServerConnection] = {}
         self.waiting: dict[str, Pending] = {}
         self.queue_store = OfflineQueueStore(queue_dir) if queue_dir else None
-        self.offline: list[Queued] = ([Queued(**value) for value in self.queue_store.load()]
-                                      if self.queue_store else [])
+        try:
+            saved_queue = self.queue_store.load() if self.queue_store else []
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            # Corrupted/spoiled ciphertext must not stop emergency relay startup.
+            # Clients retain their own encrypted outbox and will retry.
+            LOG.error("Offline spool restore failed; relying on APP retransmission: %s", exc)
+            saved_queue = []
+        self.offline: list[Queued] = [Queued(**value) for value in saved_queue]
         self.request_times: dict[str, deque[float]] = {}
         self.prune_offline()
 
@@ -261,8 +267,11 @@ class Relay:
         if len(self.clients) >= self.max_clients:
             raise ValueError("family connection limit reached")
         self.clients[fingerprint] = socket
+        capabilities = ["family-peers-v1", "family-pair-v1"]
+        if self.queue_store is not None:
+            capabilities.append("family-offline-spool-v1")
         await socket.send(json.dumps({"t": "ready", "fp": fingerprint,
-                                      "caps": ["family-peers-v1", "family-pair-v1"]}))
+                                      "caps": capabilities}))
         LOG.info("Connected identity %s", fingerprint[:12])
         return fingerprint
 
@@ -379,7 +388,10 @@ class Relay:
                 item = next((item for item in self.offline
                              if item.request_id == request_id), None)
                 if item and self.queue_store and item.logical_id:
-                    self.queue_store.delete(item.request_id)
+                    try:
+                        self.queue_store.delete(item.request_id)
+                    except OSError as exc:
+                        LOG.warning("Queue cleanup failed; APP dedup protects replay: %s", exc)
                 self.offline = [item for item in self.offline
                                 if item.request_id != request_id]
                 # A queued response arrives after the short request future.
