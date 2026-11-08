@@ -20,4 +20,27 @@ class S1RuntimeLifecyclePolicyTest {
         assertFalse(S1RuntimeLifecyclePolicy.shouldStop(false, false, true, false))
         assertFalse(S1RuntimeLifecyclePolicy.shouldStop(false, false, false, true))
     }
+
+    @Test fun repeatedOwnerTransitionsRemainIdempotentUntilLastOwnerStops() {
+        val owners = mutableSetOf<String>()
+        fun shouldStop() = S1RuntimeLifecyclePolicy.shouldStop(
+            uiVisible = "ui" in owners,
+            controllerVisible = "controller" in owners,
+            backgroundListening = "service" in owners,
+            projectionForeground = "projection" in owners
+        )
+
+        owners += "ui"
+        assertFalse(shouldStop())
+        assertFalse(shouldStop()) // Repeated attach keeps the same active owner.
+
+        owners += "service"
+        assertFalse(shouldStop())
+        owners -= "ui"
+        assertFalse(shouldStop()) // The service still owns the shared transport.
+
+        owners -= "service"
+        assertTrue(shouldStop())
+        assertTrue(shouldStop()) // Repeated detach remains stopped.
+    }
 }

@@ -54,6 +54,14 @@ class BackgroundMonitorHealthModelTest {
         assertFalse(BackgroundMonitorHealthPolicy.localServiceHealthy(state))
     }
 
+    @Test fun anActiveTickCannotBeReportedAsLocallyHealthy() {
+        val state = healthySnapshot().copy(
+            taskRunning = true,
+            lastTickStartedElapsed = 10_000L
+        )
+        assertFalse(BackgroundMonitorHealthPolicy.localServiceHealthy(state))
+    }
+
     @Test fun aLongRunningTaskIsReportedAsStalled() {
         val state = healthySnapshot().copy(
             taskRunning = true,
@@ -85,8 +93,8 @@ class BackgroundMonitorHealthModelTest {
         )
         assertFalse(waiting.allowed)
         assertEquals(
-            "The second recovery attempt must wait for the remaining 1 second",
-            1_000L,
+            "The second recovery attempt must wait for the remaining 1 millisecond",
+            1L,
             waiting.retryAfterMs
         )
 
@@ -94,6 +102,16 @@ class BackgroundMonitorHealthModelTest {
             BackgroundConsent.ENABLED, false, 1, 10_000L, 30_000L
         )
         assertTrue(second.allowed)
+
+        val thirdWaiting = BackgroundRecoveryPolicy.evaluate(
+            BackgroundConsent.ENABLED, false, 2, 30_000L, 89_999L
+        )
+        assertFalse(thirdWaiting.allowed)
+        assertEquals(
+            "The third recovery attempt must wait for the remaining 1 millisecond",
+            1L,
+            thirdWaiting.retryAfterMs
+        )
 
         val third = BackgroundRecoveryPolicy.evaluate(
             BackgroundConsent.ENABLED, false, 2, 30_000L, 90_000L

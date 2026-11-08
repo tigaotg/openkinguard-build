@@ -1,12 +1,14 @@
-name: Android compile validation
+name: OpenKinGuard Phase 2 source validation (no APK)
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/compile-validation.yml'
-      - 'app/src/main/**'
-      - 'app/src/test/**'
+      - 'app/src/**'
+      - 'app/build.gradle.kts'
+      - 'core/**'
+      - 'adapters/**'
       - 'security/**'
       - 'gradle/**'
       - 'build.gradle.kts'
@@ -44,7 +46,15 @@ jobs:
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
           sed -i 's/compose-bom:2026.09.00/compose-bom:2025.10.00/' app/build.gradle.kts
           chmod +x gradlew
-          ./gradlew --no-daemon :security:protocol:test :app:compilePilotV4Kotlin :app:testDebugUnitTest --stacktrace
+          ./gradlew --no-daemon --continue \
+            :core:model:test \
+            :core:contracts:test \
+            :core:engine:test \
+            :adapters:mock:test \
+            :security:protocol:test \
+            :app:compilePilotV4Kotlin \
+            :app:testDebugUnitTest \
+            --stacktrace
       - name: Preserve JVM test reports (no APK artifacts)
         if: always()
         uses: actions/upload-artifact@v4
@@ -52,6 +62,10 @@ jobs:
           name: phase2-jvm-test-reports
           path: |
             app/build/test-results/testDebugUnitTest/*.xml
+            core/model/build/test-results/test/*.xml
+            core/contracts/build/test-results/test/*.xml
+            core/engine/build/test-results/test/*.xml
+            adapters/mock/build/test-results/test/*.xml
             security/protocol/build/test-results/test/*.xml
           if-no-files-found: warn
           retention-days: 7
