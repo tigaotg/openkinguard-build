@@ -90,12 +90,21 @@ internal class S5DirectUdp(
     val status: String get() = when {
         !requested -> "未授权持续UDP监听"
         !active -> "持续监听已获授权，等待系统默认网络；" + lastDiagnostic
-        else -> "UDP端口" + (socket?.localPort ?: 0) +
-            "；本机候选" + localCandidates.size + "个；对端候选" +
-            peerCandidates.values.sumOf { it.size } + "个；已验签直连设备" +
-            verifiedRoutes.count { verified(it.key) } + "个；最近候选刷新" +
-            lastCandidateRefreshAtMillis + "；最近成功通信" +
-            lastSuccessfulCommunicationAtMillis + "；" + lastDiagnostic
+        else -> {
+            val now = System.currentTimeMillis()
+            val candidateAge = if (lastCandidateRefreshAtMillis > 0L)
+                ((now - lastCandidateRefreshAtMillis).coerceAtLeast(0L) / 1000L).toString() + "秒前"
+            else "尚未刷新"
+            val communicationAge = if (lastSuccessfulCommunicationAtMillis > 0L)
+                ((now - lastSuccessfulCommunicationAtMillis).coerceAtLeast(0L) / 1000L).toString() + "秒前"
+            else "尚无成功直连"
+            "UDP端口" + (socket?.localPort ?: 0) +
+                "；本机候选" + localCandidates.size + "个；对端候选" +
+                peerCandidates.values.sumOf { it.size } + "个；已验签直连设备" +
+                verifiedRoutes.count { verified(it.key) } + "个；候选刷新" +
+                candidateAge + "；最后成功通信" + communicationAge +
+                "；最近失败" + (lastFailureReason ?: "无") + "；" + lastDiagnostic
+        }
     }
 
     fun verified(peer: String): Boolean {
@@ -316,27 +325,45 @@ internal class S5DirectUdp(
     }
 
     private fun receiveLoop(live: DatagramSocket, current: Long) {
-        while (!live.isClosed && current == generation) {
-            val packet = DatagramPacket(ByteArray(12_000), 12_000)
-            try {
-                live.receive(packet)
-                val bytes = packet.data.copyOf(packet.length)
-                if (bytes.size >= 20 && bytes[0] == 1.toByte() && bytes[1] == 1.toByte()) {
-                    deliverStun(bytes, packet.address, packet.port)
-                    continue
+        try {
+            while (!live.isClosed && current == generation) {
+                val packet = DatagramPacket(ByteArray(12_000), 12_000)
+                try {
+                    live.receive(packet)
+                    val bytes = packet.data.copyOf(packet.length)
+                    if (bytes.size >= 20 && bytes[0] == 1.toByte() && bytes[1] == 1.toByte()) {
+                        deliverStun(bytes, packet.address, packet.port)
+                        continue
+                    }
+                    if (bytes.size !in 100..10_500) continue
+                    val from = InetSocketAddress(packet.address, packet.port)
+                    try { work.execute { handle(bytes, from, current) } }
+                    catch (_: java.util.concurrent.RejectedExecutionException) {
+                        lastDiagnostic = "收到过多UDP报文，已限制并发"
+                        lastFailureReason = "UDP_WORK_QUEUE_FULL"
+                        onChanged()
+                    }
+                } catch (_: SocketTimeoutException) {
+                    // Allows lifecycle checks without changing the persistent port.
+                } catch (_: SocketException) {
+                    break
+                } catch (_: Exception) {
+                    // Untrusted UDP input never crashes the receiver.
                 }
-                if (bytes.size !in 100..10_500) continue
-                val from = InetSocketAddress(packet.address, packet.port)
-                try { work.execute { handle(bytes, from, current) } }
-                catch (_: java.util.concurrent.RejectedExecutionException) {
-                    lastDiagnostic = "收到过多UDP报文，已限制并发"
+            }
+        } finally {
+            synchronized(this) {
+                // Explicit stop/network replacement increments generation first.
+                // Only recover if this is still the currently owned socket.
+                if (current == generation && requested && socket === live) {
+                    socket = null
+                    boundNetwork = null
+                    runCatching { live.close() }
+                    lastFailureReason = "UDP_RECEIVER_EXITED"
+                    lastDiagnostic = "UDP接收线程意外退出，正在恢复监听"
+                    onChanged()
+                    scheduleSocketRetry()
                 }
-            } catch (_: SocketTimeoutException) {
-                // Allows lifecycle checks without changing the persistent port.
-            } catch (_: SocketException) {
-                break
-            } catch (_: Exception) {
-                // Untrusted UDP input never crashes the receiver.
             }
         }
     }

@@ -292,7 +292,7 @@ internal class S2RelayClient(
         familyCapabilities = emptySet()
         lastFailureReason = cause.take(160)
         failPending("公网通信中断：$cause")
-        status = if (denied) cause else "公网中继断开：\${cause.take(80)}；稍后重连"
+        status = if (denied) cause else "公网中继断开：" + cause.take(80) + "；稍后重连"
         onChanged()
         if (enabled && networkAvailable) {
             // Owner revocation is deliberately probed slowly; transient network

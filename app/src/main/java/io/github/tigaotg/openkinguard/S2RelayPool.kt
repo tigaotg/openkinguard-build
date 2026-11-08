@@ -123,9 +123,18 @@ internal class S2RelayPool(
             val sockets = selected.count { it.socketConnected }
             val authenticated = selected.count { it.connected }
             val network = if (lastDefaultNetwork == null) "无默认网络" else "默认网络可用"
-            return "$sockets/${active.size} 个WSS连接，$authenticated/${active.size} 个设备身份已认证（$network）；" +
+            val now = System.currentTimeMillis()
+            return sockets.toString() + "/" + active.size +
+                " 个WSS连接，" + authenticated + "/" + active.size +
+                " 个设备身份已认证（" + network + "）；" +
                 selected.mapIndexed { index, client ->
-                    "节点${index + 1}：${client.status.take(100)}"
+                    val age = if (client.lastCommunicationAtMillis > 0L)
+                        ((now - client.lastCommunicationAtMillis).coerceAtLeast(0L) / 1000L)
+                            .toString() + "秒前收到消息"
+                    else "尚无有效消息"
+                    val failure = client.lastFailureReason?.let { "；最近失败：" + it.take(60) }.orEmpty()
+                    "节点" + (index + 1) + "：" + client.status.take(80) +
+                        "（" + age + failure + "）"
                 }.joinToString("；")
         }
 
