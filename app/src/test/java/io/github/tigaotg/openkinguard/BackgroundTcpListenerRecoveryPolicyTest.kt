@@ -7,17 +7,26 @@ import org.junit.Test
 class BackgroundTcpListenerRecoveryPolicyTest {
     @Test fun healthyAndBindingListenersAreNotRestarted() {
         assertFalse(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
-            BackgroundTcpListenerState.LISTENING))
+            BackgroundConsent.ENABLED, BackgroundTcpListenerState.LISTENING))
         assertFalse(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
-            BackgroundTcpListenerState.BINDING))
+            BackgroundConsent.ENABLED, BackgroundTcpListenerState.BINDING))
     }
 
-    @Test fun stoppedOrFailedListenersAreRebuiltByTheService() {
-        assertTrue(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
-            BackgroundTcpListenerState.NOT_STARTED))
-        assertTrue(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
-            BackgroundTcpListenerState.FAILED))
-        assertTrue(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
-            BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY))
+    @Test fun stoppedOrFailedListenersRecoverOnlyWithExistingConsent() {
+        val broken = listOf(
+            BackgroundTcpListenerState.NOT_STARTED,
+            BackgroundTcpListenerState.FAILED,
+            BackgroundTcpListenerState.CLOSED_UNEXPECTEDLY
+        )
+        broken.forEach { state ->
+            assertTrue(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
+                BackgroundConsent.ENABLED, state))
+            assertFalse(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
+                BackgroundConsent.USER_DISABLED, state))
+            assertFalse(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
+                BackgroundConsent.NOT_DECIDED, state))
+            assertFalse(BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
+                BackgroundConsent.CONSENT_INVALID, state))
+        }
     }
 }

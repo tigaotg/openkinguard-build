@@ -416,7 +416,8 @@ class S1LanService : Service() {
         try {
             val manager = S1Runtime.manager(applicationContext)
             var tcpState = manager.tcpListenerHealth()
-            if (BackgroundTcpListenerRecoveryPolicy.shouldAttempt(tcpState)) {
+            if (BackgroundTcpListenerRecoveryPolicy.shouldAttempt(
+                    BackgroundConsentStore.get(applicationContext), tcpState)) {
                 Log.w("OpenKinGuard",
                     "TCP listener is ${tcpState.name}; attempting in-service recovery")
                 runCatching { S1Runtime.attachService(applicationContext) }
