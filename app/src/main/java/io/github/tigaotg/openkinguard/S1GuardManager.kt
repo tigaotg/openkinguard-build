@@ -2048,9 +2048,11 @@ class S1GuardManager(context: Context) {
     }.getOrDefault(emptySet())
 
     fun probeAsync(): CompletableFuture<Unit> = synchronized(probingLock) {
+        // Reuse an in-flight probe even if the listener has just been closed;
+        // callers must not release its bounded WakeLock before that work unwinds.
+        probingCompletion?.takeIf { !it.isDone }?.let { return@synchronized it }
         if (listener?.isClosed != false)
             return@synchronized CompletableFuture.completedFuture(Unit)
-        probingCompletion?.takeIf { !it.isDone }?.let { return@synchronized it }
 
         val completion = CompletableFuture<Unit>()
         probingCompletion = completion
