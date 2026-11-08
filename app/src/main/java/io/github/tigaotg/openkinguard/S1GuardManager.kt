@@ -184,7 +184,7 @@ class S1GuardManager(context: Context) {
                 displayName = nickname.take(32),
                 roleDescription = if (peer.role == PairingRole.SUBJECT)
                     "对方是我的救助者" else "我正在帮助对方",
-                lanVerified = peer.relationId in verified,
+                lanVerified = verified.containsKey(peer.relationId),
                 relayVerified = verifiedByRelay(peer.relationId),
                 directVerified = direct.verified(peer.peerFingerprint),
                 lastSignedMessageAtMillis = history.lastVerifiedAt[peer.relationId] ?: 0L
