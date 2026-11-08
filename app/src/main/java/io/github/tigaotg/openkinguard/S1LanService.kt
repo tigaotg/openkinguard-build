@@ -423,6 +423,7 @@ class S1LanService : Service() {
                     .onFailure { recoveryError ->
                         Log.w("OpenKinGuard", "TCP listener self-recovery failed", recoveryError)
                     }
+                tcpState = manager.tcpListenerHealth()
                 var waitCount = 0
                 while (tcpState == BackgroundTcpListenerState.BINDING && waitCount < 10) {
                     try { Thread.sleep(25L) }
