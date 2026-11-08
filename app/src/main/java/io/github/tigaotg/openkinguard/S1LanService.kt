@@ -415,6 +415,30 @@ class S1LanService : Service() {
         var probeCompletionAttached = false
         try {
             val manager = S1Runtime.manager(applicationContext)
+            var tcpState = manager.tcpListenerHealth()
+            if (BackgroundTcpListenerRecoveryPolicy.shouldAttempt(tcpState)) {
+                Log.w("OpenKinGuard",
+                    "TCP listener is ${tcpState.name}; attempting in-service recovery")
+                runCatching { S1Runtime.attachService(applicationContext) }
+                    .onFailure { recoveryError ->
+                        Log.w("OpenKinGuard", "TCP listener self-recovery failed", recoveryError)
+                    }
+                var waitCount = 0
+                while (tcpState == BackgroundTcpListenerState.BINDING && waitCount < 10) {
+                    try { Thread.sleep(25L) }
+                    catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    }
+                    tcpState = manager.tcpListenerHealth()
+                    waitCount++
+                }
+                tcpState = manager.tcpListenerHealth()
+            }
+            BackgroundMonitorHealth.setTcpListenerState(tcpState)
+            if (tcpState != BackgroundTcpListenerState.LISTENING) {
+                throw IllegalStateException("TCP listener health: ${tcpState.name}")
+            }
             manager.probeAsync().whenComplete { _, _ ->
                 if (wakeLockCompletion.markProbeFinished()) {
                     runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
@@ -425,11 +449,6 @@ class S1LanService : Service() {
             manager.deliverPending()
             if (startedAt - schedulerStartedElapsed >= 60_000L) {
                 manager.checkLiveness()
-            }
-            val tcpState = manager.tcpListenerHealth()
-            BackgroundMonitorHealth.setTcpListenerState(tcpState)
-            if (tcpState != BackgroundTcpListenerState.LISTENING) {
-                throw IllegalStateException("TCP listener health: ${tcpState.name}")
             }
             val completedAt = SystemClock.elapsedRealtime()
             BackgroundMonitorHealth.finishTick(generation, completedAt)

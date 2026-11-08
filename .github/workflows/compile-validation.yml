@@ -65,6 +65,7 @@ jobs:
               --tests io.github.tigaotg.openkinguard.S5DirectListenerPolicyTest \
               --tests io.github.tigaotg.openkinguard.S5DirectMaintenancePolicyTest \
               --tests io.github.tigaotg.openkinguard.BackgroundTickWakeLockCompletionTest \
+              --tests io.github.tigaotg.openkinguard.BackgroundTcpListenerRecoveryPolicyTest \
               --tests io.github.tigaotg.openkinguard.PublicP2pDiagnosticsTest \
             --stacktrace
       - name: Preserve JVM test reports (no APK artifacts)
