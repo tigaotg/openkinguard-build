@@ -7,17 +7,42 @@ import android.util.AtomicFile
 import io.github.tigaotg.openkinguard.core.model.MessageId
 import io.github.tigaotg.openkinguard.security.protocol.ReplayWindow
 import io.github.tigaotg.openkinguard.security.protocol.SafetyZonePolicy
+import io.github.tigaotg.openkinguard.security.protocol.S4DeliveryPolicy
+import io.github.tigaotg.openkinguard.security.protocol.S1CaseWire
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.KeyStore
+import java.util.Base64
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 enum class ExerciseStatus { OPEN, CLAIM_PENDING, ACCEPTED, CLOSED, EXPIRED }
+
+data class DeliveryProgress(
+    val relayAcceptedAt: Long = 0L,
+    val deviceReceivedAt: Long = 0L,
+    val familyConfirmedAt: Long = 0L,
+)
+
+data class DeliveryOutboxEntry(
+    val messageId: String,
+    val eventId: String,
+    val relationId: String,
+    val peerFingerprint: String,
+    val payloadKind: String,
+    val createdAt: Long,
+    val expiresAt: Long,
+    /** Immutable signed ciphertext frame, Base64URL-encoded in the encrypted local store. */
+    val frameBase64: String,
+    val attemptCount: Int = 0,
+    val nextAttemptAt: Long = 0L,
+    val relayAcceptedAt: Long = 0L,
+)
 
 data class ExerciseCase(
     val eventId: String,
@@ -37,6 +62,8 @@ data class ExerciseCase(
     val originatedAt: Long = 0L,
     /** Persisted per-helper close retry time; the attempt counter never permanently blocks sync. */
     val closeLastAttemptAt: Map<String, Long> = emptyMap(),
+    /** Three independent milestones; relay acceptance is never treated as device delivery. */
+    val deliveryProgress: Map<String, DeliveryProgress> = emptyMap(),
 )
 
 data class ManualContact(val name: String, val phone: String)
@@ -60,6 +87,7 @@ data class CheckinRecord(
     val originatedAt: Long = 0L,
     /** Blank means broadcast to all helpers; otherwise only the specified relation. */
     val targetRelationId: String = "",
+    val deliveryProgress: Map<String, DeliveryProgress> = emptyMap(),
 )
 
 /** Signed remote position, stored in the same encrypted private exercise database. */
@@ -142,6 +170,8 @@ data class ExerciseState(
     val directUdpListenerEnabled: Boolean = false,
     /** Pinned peer ECDH cards, encrypted at rest with this existing history database. */
     val peerEncryptionCards: Map<String, String> = emptyMap(),
+    /** Immutable signed frames survive process death until a verified device receipt or expiry. */
+    val deliveryOutbox: List<DeliveryOutboxEntry> = emptyList(),
 )
 
 /** Transactional encrypted local exercise log. Identity key and pairings are never changed. */
@@ -246,7 +276,8 @@ internal class S1CaseStore(context: Context) {
                 (0 until closedSync.length()).map { closedSync.getString(it) }.toSet(),
                 closing.keys().asSequence().associateWith { closing.getInt(it) },
                 item.optString("supersededBy"), item.optLong("originatedAt", 0L),
-                lastClosing.keys().asSequence().associateWith { lastClosing.getLong(it) })
+                lastClosing.keys().asSequence().associateWith { lastClosing.getLong(it) },
+                readDeliveryProgress(item.optJSONObject("deliveryProgress")))
         }
         val contactsArr = root.getJSONArray("contacts")
         val contacts = (0 until contactsArr.length()).map { i ->
@@ -280,7 +311,8 @@ internal class S1CaseStore(context: Context) {
                 (0 until delivered.length()).map { delivered.getString(it) }.toSet(),
                 attempts.keys().asSequence().associateWith { attempts.getInt(it) },
                 item.optString("supersededBy"), item.optLong("originatedAt", 0L),
-                item.optString("targetRelationId", ""))
+                item.optString("targetRelationId", ""),
+                readDeliveryProgress(item.optJSONObject("deliveryProgress")))
         }.takeLast(100)
         // Current cases are retained; closed/superseded historical cases obey retention.
         val cutoff = System.currentTimeMillis() - days * 86_400_000L
@@ -382,8 +414,64 @@ internal class S1CaseStore(context: Context) {
                     if (fingerprint.matches(Regex("[0-9a-f]{64}")) && card.length in 200..400)
                         fingerprint to card else null
                 }.toMap()
-            }
+            },
+            deliveryOutbox = readDeliveryOutbox(root.optJSONArray("deliveryOutbox"))
         )
+    }
+
+    private fun readDeliveryProgress(value: JSONObject?): Map<String, DeliveryProgress> {
+        val source = value ?: JSONObject()
+        return source.keys().asSequence().mapNotNull { relation ->
+            runCatching {
+                require(relation.length == 36 && UUID.fromString(relation).toString() == relation)
+                val item = source.getJSONObject(relation)
+                relation to DeliveryProgress(
+                    item.optLong("relayAcceptedAt").coerceAtLeast(0L),
+                    item.optLong("deviceReceivedAt").coerceAtLeast(0L),
+                    item.optLong("familyConfirmedAt").coerceAtLeast(0L))
+            }.getOrNull()
+        }.toMap()
+    }
+
+    private fun deliveryProgressJson(value: Map<String, DeliveryProgress>): JSONObject =
+        JSONObject().apply {
+            value.forEach { (relation, progress) ->
+                put(relation, JSONObject().put("relayAcceptedAt", progress.relayAcceptedAt)
+                    .put("deviceReceivedAt", progress.deviceReceivedAt)
+                    .put("familyConfirmedAt", progress.familyConfirmedAt))
+            }
+        }
+
+    private fun readDeliveryOutbox(value: JSONArray?): List<DeliveryOutboxEntry> {
+        val now = System.currentTimeMillis()
+        val queue = value ?: JSONArray()
+        return (0 until queue.length()).mapNotNull { index ->
+            runCatching {
+                val item = queue.getJSONObject(index)
+                val entry = DeliveryOutboxEntry(
+                    item.getString("messageId"), item.getString("eventId"),
+                    item.getString("relationId"), item.getString("peerFingerprint"),
+                    item.getString("payloadKind"), item.getLong("createdAt"),
+                    item.getLong("expiresAt"), item.getString("frame"),
+                    item.optInt("attemptCount").coerceAtLeast(0),
+                    item.optLong("nextAttemptAt").coerceAtLeast(0L),
+                    item.optLong("relayAcceptedAt").coerceAtLeast(0L))
+                require(entry.messageId.length == 36 &&
+                    UUID.fromString(entry.messageId).toString() == entry.messageId)
+                require(entry.eventId.length == 36 &&
+                    UUID.fromString(entry.eventId).toString() == entry.eventId)
+                require(entry.relationId.length == 36 &&
+                    UUID.fromString(entry.relationId).toString() == entry.relationId)
+                require(entry.peerFingerprint.matches(Regex("[0-9a-f]{64}")))
+                require(entry.payloadKind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN, S1CaseWire.CLOSE))
+                require(entry.expiresAt > now && entry.expiresAt > entry.createdAt &&
+                    entry.expiresAt <= entry.createdAt + S4DeliveryPolicy.MESSAGE_TTL_MILLIS + 60_000L)
+                require(entry.frameBase64.length in 100..11_000)
+                val frame = Base64.getUrlDecoder().decode(entry.frameBase64)
+                require(frame.size in 100..8_192)
+                entry
+            }.getOrNull()
+        }.takeLast(S4DeliveryPolicy.MAX_OUTBOX_ENTRIES)
     }
 
     private fun save(state: ExerciseState) {
@@ -415,7 +503,8 @@ internal class S1CaseStore(context: Context) {
                 .put("attempts", attempts)
                 .put("closedSynced", JSONArray(item.closedSyncedRelations.toList()))
                 .put("closeAttempts", closing)
-                .put("closeLastAttemptAt", lastClosing))
+                .put("closeLastAttemptAt", lastClosing)
+                .put("deliveryProgress", deliveryProgressJson(item.deliveryProgress)))
         }
         root.put("cases", cases)
         root.put("retentionDays", state.retentionDays)
@@ -487,6 +576,16 @@ internal class S1CaseStore(context: Context) {
                 put(fingerprint, card)
             }
         })
+        root.put("deliveryOutbox", JSONArray().apply {
+            state.deliveryOutbox.takeLast(S4DeliveryPolicy.MAX_OUTBOX_ENTRIES).forEach { entry ->
+                put(JSONObject().put("messageId", entry.messageId).put("eventId", entry.eventId)
+                    .put("relationId", entry.relationId).put("peerFingerprint", entry.peerFingerprint)
+                    .put("payloadKind", entry.payloadKind).put("createdAt", entry.createdAt)
+                    .put("expiresAt", entry.expiresAt).put("frame", entry.frameBase64)
+                    .put("attemptCount", entry.attemptCount).put("nextAttemptAt", entry.nextAttemptAt)
+                    .put("relayAcceptedAt", entry.relayAcceptedAt))
+            }
+        })
         root.put("receivedLocations", JSONArray().apply {
             state.receivedLocations.takeLast(200).forEach { fix ->
                 put(JSONObject().put("relation", fix.relationId)
@@ -519,7 +618,8 @@ internal class S1CaseStore(context: Context) {
                     .put("delivered", JSONArray(entry.deliveredRelations.toList()))
                     .put("attempts", JSONObject().apply {
                         entry.attempts.forEach { (id, n) -> put(id, n) }
-                    }))
+                    })
+                    .put("deliveryProgress", deliveryProgressJson(entry.deliveryProgress)))
             }
         })
         root.put("handshakeLog", JSONArray().apply {
