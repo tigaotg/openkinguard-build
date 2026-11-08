@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /** Explicitly enabled connected-device foreground service. Android does not guarantee 24/7 execution. */
 class S1LanService : Service() {
@@ -29,6 +30,7 @@ class S1LanService : Service() {
         private const val NOTIFICATION_ID = 205
         private const val STARTING_WINDOW_MS = 15_000L
         private const val TICK_INTERVAL_SECONDS = 60L
+        private const val NETWORK_RECOVERY_DEBOUNCE_MS = 1_500L
         // Bound CPU-awake time to the short critical heartbeat; never hold a
         // permanent wakelock for the whole background-listening session.
         private const val TICK_WAKE_LOCK_TIMEOUT_MS = 15_000L
@@ -169,6 +171,7 @@ class S1LanService : Service() {
     private var schedulerStartedElapsed = 0L
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val networkChangeGeneration = AtomicLong(0L)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -337,6 +340,7 @@ class S1LanService : Service() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 BackgroundMonitorHealth.setNetworkState(BackgroundNetworkState.NETWORK_CHANGED)
+                scheduleNetworkRecovery()
             }
 
             override fun onCapabilitiesChanged(
@@ -347,6 +351,7 @@ class S1LanService : Service() {
                     BackgroundMonitorHealth.setNetworkState(
                         BackgroundNetworkState.NETWORK_AVAILABLE
                     )
+                    scheduleNetworkRecovery()
                 }
             }
 
@@ -355,6 +360,7 @@ class S1LanService : Service() {
                     if (manager.activeNetwork == null) BackgroundNetworkState.NO_NETWORK
                     else BackgroundNetworkState.NETWORK_CHANGED
                 )
+                scheduleNetworkRecovery()
             }
         }
         try {
@@ -371,7 +377,41 @@ class S1LanService : Service() {
         }
     }
 
+    /**
+     * Wi-Fi/mobile handovers can emit several callbacks. Only the final stable
+     * default network schedules a bounded heartbeat, rather than waiting up to 60s.
+     */
+    private fun scheduleNetworkRecovery() {
+        val generation = networkChangeGeneration.incrementAndGet()
+        val executor = scheduler ?: return
+        runCatching {
+            executor.schedule({
+                if (generation == networkChangeGeneration.get()) {
+                    val manager = getSystemService(Context.CONNECTIVITY_SERVICE)
+                        as ConnectivityManager
+                    val active = manager.activeNetwork
+                    val capabilities = active?.let { manager.getNetworkCapabilities(it) }
+                    val state = when {
+                        active == null -> BackgroundNetworkState.NO_NETWORK
+                        capabilities == null -> BackgroundNetworkState.UNKNOWN
+                        else -> BackgroundNetworkState.NETWORK_AVAILABLE
+                    }
+                    BackgroundMonitorHealth.setNetworkState(state)
+                    if (state == BackgroundNetworkState.NETWORK_AVAILABLE &&
+                        !tickInProgress.get()) {
+                        Log.i("OpenKinGuard",
+                            "Default network restored; running an immediate peer recovery tick")
+                        runScheduledTick()
+                    }
+                }
+            }, NETWORK_RECOVERY_DEBOUNCE_MS, TimeUnit.MILLISECONDS)
+        }.onFailure {
+            Log.w("OpenKinGuard", "Cannot schedule network recovery tick", it)
+        }
+    }
+
     private fun unregisterNetworkMonitor() {
+        networkChangeGeneration.incrementAndGet()
         val manager = connectivityManager
         val callback = networkCallback
         if (manager != null && callback != null) {
@@ -441,14 +481,30 @@ class S1LanService : Service() {
             if (tcpState != BackgroundTcpListenerState.LISTENING) {
                 throw IllegalStateException("TCP listener health: ${tcpState.name}")
             }
-            manager.probeAsync().whenComplete { _, _ ->
-                if (wakeLockCompletion.markProbeFinished()) {
-                    runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
-                }
+            val connectivity = getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager
+            val activeNetwork = connectivity.activeNetwork
+            val networkCapabilities = activeNetwork?.let {
+                connectivity.getNetworkCapabilities(it)
             }
-            probeCompletionAttached = true
+            val networkAvailable = activeNetwork != null && networkCapabilities != null
+            BackgroundMonitorHealth.setNetworkState(when {
+                activeNetwork == null -> BackgroundNetworkState.NO_NETWORK
+                networkCapabilities == null -> BackgroundNetworkState.UNKNOWN
+                else -> BackgroundNetworkState.NETWORK_AVAILABLE
+            })
+            if (networkAvailable) {
+                manager.probeAsync().whenComplete { _, _ ->
+                    if (wakeLockCompletion.markProbeFinished()) {
+                        runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+                    }
+                }
+                probeCompletionAttached = true
+            }
             manager.expireOldIncoming()
-            manager.deliverPending()
+            // No route can deliver pending frames while there is no usable default network.
+            // Avoid repeated socket timeouts; the network callback schedules an immediate retry.
+            if (networkAvailable) manager.deliverPending()
             if (startedAt - schedulerStartedElapsed >= 60_000L) {
                 manager.checkLiveness()
             }
