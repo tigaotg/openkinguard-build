@@ -70,7 +70,7 @@ internal class S5DirectUdp(
     @Volatile private var boundNetwork: Network? = null
     @Volatile private var requested = false
     @Volatile private var localCandidates: List<S5DirectCandidatePolicy.Candidate> = emptyList()
-    @Volatile private var lastDiagnostic = "未启动"
+    @Volatile private var lastDiagnostic = "UDP监听未启动"
     @Volatile private var lastFailureReason: String? = null
     @Volatile private var lastCandidateRefreshAtMillis = 0L
     @Volatile private var lastSuccessfulCommunicationAtMillis = 0L
@@ -88,8 +88,13 @@ internal class S5DirectUdp(
 
     val active: Boolean get() = socket?.isClosed == false
     val status: String get() = when {
-        !requested -> "未授权持续UDP监听"
-        !active -> "持续监听已获授权，等待系统默认网络；" + lastDiagnostic
+        !requested -> lastDiagnostic
+        !active -> {
+            val state = if (connectivity.activeNetwork == null)
+                "UDP监听已请求，等待系统默认网络"
+            else "UDP监听已请求，但本机Socket尚未建立"
+            state + "；最近失败：" + (lastFailureReason ?: "无") + "；" + lastDiagnostic
+        }
         else -> {
             val now = System.currentTimeMillis()
             val candidateAge = if (lastCandidateRefreshAtMillis > 0L)
@@ -141,7 +146,7 @@ internal class S5DirectUdp(
         if (network == null) {
             boundNetwork = null
             lastFailureReason = "NO_DEFAULT_NETWORK"
-            lastDiagnostic = "持续监听授权已保存；当前没有默认网络，等待网络恢复"
+            lastDiagnostic = "当前没有默认网络，等待网络恢复"
             onChanged()
             return
         }
@@ -199,7 +204,7 @@ internal class S5DirectUdp(
         releaseTransport("Android网络变化，旧UDP映射和直连路径已失效")
         val network = connectivity.activeNetwork
         if (network == null) {
-            lastDiagnostic = "持续监听仍获授权，但当前无默认网络；等待Wi-Fi或移动数据恢复"
+            lastDiagnostic = "当前无默认网络；等待Wi-Fi或移动数据恢复"
             lastFailureReason = "NO_DEFAULT_NETWORK"
             onChanged()
             return

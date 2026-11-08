@@ -34,6 +34,17 @@ class PublicP2pDiagnosticsTest {
             verifiedDirectCount = 1).title.contains("已验签直连"))
     }
 
+    @Test fun verifiedDirectRemainsReportedWhileNostrReconnects() {
+        assertTrue(PublicP2pDiagnostics.explain(true, false, true, active,
+            verifiedDirectCount = 1).title.contains("已验签直连"))
+    }
+
+    @Test fun waitingForNetworkIsNotReportedAsUserNotStarted() {
+        val status = "UDP监听已请求，等待系统默认网络；最近失败：NO_DEFAULT_NETWORK"
+        assertTrue(PublicP2pDiagnostics.explain(true, true, false, status)
+            .title.contains("等待系统网络恢复"))
+    }
+
     @Test fun diagnosticTextCannotInventAVerifiedDirectRoute() {
         val misleading = active.replace("已验签直连设备0个", "已验签直连设备99个")
         assertTrue(PublicP2pDiagnostics.explain(true, true, true, misleading,
