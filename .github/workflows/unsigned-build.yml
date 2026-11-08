@@ -1,11 +1,8 @@
 name: OpenKinGuard unsigned APK
 
 on:
+  # Manual-only. Phase 2 source validation must not generate APK/AAB artifacts.
   workflow_dispatch:
-  push:
-    paths:
-      - 'app/**'
-      - '.github/workflows/unsigned-build.yml'
 
 permissions:
   contents: read
