@@ -54,6 +54,7 @@ internal class S2RelayPool(
     }
     private var networkCallbackRegistered = false
     private var lastDefaultNetwork: Network? = null
+    private var lastLinkProperties: android.net.LinkProperties? = null
     private var pendingNetworkCheck: ScheduledFuture<*>? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleNetworkRecheck()
@@ -66,7 +67,12 @@ internal class S2RelayPool(
         override fun onLinkPropertiesChanged(
             network: Network, properties: android.net.LinkProperties
         ) {
-            if (connectivity.activeNetwork == network) scheduleNetworkRecheck(force = true)
+            if (connectivity.activeNetwork == network) {
+                val actual = connectivity.getLinkProperties(network)
+                val changed = actual != lastLinkProperties
+                lastLinkProperties = actual
+                if (changed) scheduleNetworkRecheck(force = true)
+            }
         }
     }
 
@@ -150,6 +156,7 @@ internal class S2RelayPool(
         if (shouldConnect) {
             registerNetworkCallback()
             lastDefaultNetwork = connectivity.activeNetwork
+            lastLinkProperties = lastDefaultNetwork?.let { connectivity.getLinkProperties(it) }
         } else {
             pendingNetworkCheck?.cancel(false)
             pendingNetworkCheck = null
@@ -158,6 +165,7 @@ internal class S2RelayPool(
                 networkCallbackRegistered = false
             }
             lastDefaultNetwork = null
+            lastLinkProperties = null
         }
         val hasNetwork = shouldConnect && lastDefaultNetwork != null
         slots.forEachIndexed { index, client ->
@@ -184,6 +192,7 @@ internal class S2RelayPool(
                     val actual = connectivity.activeNetwork
                     if (!force && actual == lastDefaultNetwork) return@schedule
                     lastDefaultNetwork = actual
+                    lastLinkProperties = actual?.let { connectivity.getLinkProperties(it) }
                     slots.take(endpoints.size).forEach { client ->
                         client.networkChanged(actual != null)
                     }

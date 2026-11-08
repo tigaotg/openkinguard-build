@@ -60,6 +60,7 @@ internal class S2NostrTransport(
     @Volatile private var epoch = 0L
     private var networkCallbackRegistered = false
     private var lastDefaultNetwork: Network? = null
+    private var lastLinkProperties: android.net.LinkProperties? = null
     private var pendingDirectAddressRefresh: ScheduledFuture<*>? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleNetworkRecheck()
@@ -72,7 +73,12 @@ internal class S2NostrTransport(
         override fun onLinkPropertiesChanged(
             network: Network, properties: android.net.LinkProperties
         ) {
-            if (connectivity.activeNetwork == network) scheduleDirectAddressRefresh(network)
+            if (connectivity.activeNetwork == network) {
+                val actual = connectivity.getLinkProperties(network)
+                val changed = actual != lastLinkProperties
+                lastLinkProperties = actual
+                if (changed) scheduleDirectAddressRefresh(network)
+            }
         }
     }
 
@@ -252,6 +258,7 @@ internal class S2NostrTransport(
             // A failure to unwrap a saved secret stops activation, not silent identity replacement.
             identity
             lastDefaultNetwork = connectivity.activeNetwork
+            lastLinkProperties = lastDefaultNetwork?.let { connectivity.getLinkProperties(it) }
             if (!networkCallbackRegistered) {
                 runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
                     .onSuccess { networkCallbackRegistered = true }
@@ -268,6 +275,7 @@ internal class S2NostrTransport(
                 networkCallbackRegistered = false
             }
             lastDefaultNetwork = null
+            lastLinkProperties = null
         }
         onChanged()
     }
@@ -280,6 +288,7 @@ internal class S2NostrTransport(
                 val actual = connectivity.activeNetwork
                 if (actual == lastDefaultNetwork) return@synchronized
                 lastDefaultNetwork = actual
+                lastLinkProperties = actual?.let { connectivity.getLinkProperties(it) }
                 directNetworkChanged?.invoke()
                 sockets.forEach { slot ->
                     val oldSocket = slot.socket
