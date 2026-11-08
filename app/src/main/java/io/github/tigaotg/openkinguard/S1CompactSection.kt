@@ -2901,7 +2901,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 val directActive = manager.directActive()
                 val continuousDirectEnabled = snapshot.history.directUdpListenerEnabled
                 val advice = PublicP2pDiagnostics.explain(signalEnabled, signalReady,
-                    directActive, manager.directStatus())
+                    directActive, manager.directStatus(), snapshot.directVerifiedRelations.size)
                 FeatureHelp("公共节点帮已绑定的手机交换连接地址，P2P 尝试直接传消息。" +
                     "节点连上不等于两台手机连通，手机可能被运营商 NAT 限制。",
                     label = "公共节点和直连有什么不同")

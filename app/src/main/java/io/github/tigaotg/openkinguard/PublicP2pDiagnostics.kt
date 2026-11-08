@@ -14,17 +14,15 @@ internal object PublicP2pDiagnostics {
     data class Advice(val title: String, val detail: String)
 
     fun explain(enabled: Boolean, signalReady: Boolean, directActive: Boolean,
-                directStatus: String): Advice {
+                directStatus: String, verifiedDirectCount: Int = 0): Advice {
         if (!enabled) return Advice("公共信令未开启", "先打开公共信令，让两部手机都连到至少一个相同的节点。")
         if (!signalReady) return Advice("公共节点还未确认", "若等待较久，请展开技术信息检查节点拒收或网络超时。")
         if (!directActive) return Advice("信令已连接，尚未开始直连", "还需要两部手机都点击开始 P2P 测试。")
-        val verified = Regex("已收到有效签名回执的直连设备(\\d+)个")
-            .find(directStatus)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val local = Regex("本机候选(\\d+)个")
             .find(directStatus)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val remote = Regex("对端候选(\\d+)个")
             .find(directStatus)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-        if (verified > 0) return Advice("已验签直连 $verified 台设备", "P2P 通道可用；单条 SOS 仍须等待接收方签名回执。")
+        if (verifiedDirectCount > 0) return Advice("已验签直连 $verifiedDirectCount 台设备", "P2P 通道可用；单条 SOS 仍须等待接收方签名回执。")
         if (local == 0) return Advice("正在获取本机连接地址", "稍等一会；持续为零可生成完整诊断查看 STUN 结果。")
         if (remote == 0) return Advice("尚未收到家人手机的连接地址", "检查双方是否使用同一公共节点并都开启了 P2P。")
         return Advice("已交换地址，仍在尝试直连", "收到了 $remote 个对方候选，但没有验签回执；可能是运营商 NAT 或防火墙阻止。")
@@ -53,7 +51,7 @@ internal object PublicP2pDiagnostics {
         val addrs = links?.linkAddresses.orEmpty().map { it.address }
         val ipv4 = addrs.any { it is Inet4Address && !it.isLoopbackAddress }
         val ipv6 = addrs.any { it is Inet6Address && !it.isLinkLocalAddress }
-        val advice = explain(enabled, signalReady, directActive, directStatus)
+        val advice = explain(enabled, signalReady, directActive, directStatus, verifiedDirectCount)
         return listOf(
             "OpenKinGuard · 公共节点和 P2P 诊断（用户手动生成）",
             "生成时间：${DateFormat.getDateTimeInstance().format(Date())}",

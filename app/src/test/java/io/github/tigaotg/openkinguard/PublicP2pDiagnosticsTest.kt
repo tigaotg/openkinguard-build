@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PublicP2pDiagnosticsTest {
-    private val active = "UDP端口43026；本机候选2个；对端候选3个；已收到有效签名回执的直连设备0个；握手超时"
+    private val active = "UDP端口43026；本机候选2个；对端候选3个；已验签直连设备0个；握手超时"
 
     @Test fun noSignalingShowsEnableInstruction() {
         assertEquals("公共信令未开启",
@@ -30,9 +30,14 @@ class PublicP2pDiagnosticsTest {
     }
 
     @Test fun onlySignedReplyCountsAsVerifiedP2p() {
-        assertTrue(PublicP2pDiagnostics.explain(true, true, true,
-            active.replace("直连设备0个", "直连设备1个"))
-            .title.contains("已验签直连"))
+        assertTrue(PublicP2pDiagnostics.explain(true, true, true, active,
+            verifiedDirectCount = 1).title.contains("已验签直连"))
+    }
+
+    @Test fun diagnosticTextCannotInventAVerifiedDirectRoute() {
+        val misleading = active.replace("已验签直连设备0个", "已验签直连设备99个")
+        assertTrue(PublicP2pDiagnostics.explain(true, true, true, misleading,
+            verifiedDirectCount = 0).title.contains("已交换地址"))
     }
 
     @Test fun natNotesSurvivePrivacyRedaction() {
