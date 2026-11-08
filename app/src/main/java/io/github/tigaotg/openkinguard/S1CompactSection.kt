@@ -2899,6 +2899,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 val signalEnabled = snapshot.history.nostrRelayEnabled
                 val signalReady = manager.publicRelayReady()
                 val directActive = manager.directActive()
+                val continuousDirectEnabled = snapshot.history.directUdpListenerEnabled
                 val advice = PublicP2pDiagnostics.explain(signalEnabled, signalReady,
                     directActive, manager.directStatus())
                 FeatureHelp("公共节点帮已绑定的手机交换连接地址，P2P 尝试直接传消息。" +
@@ -2934,9 +2935,30 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                 }
                 InlineActionFeedback(publicNodeFeedback)
                 HorizontalDivider()
-                Text("P2P 直连测试", style = MaterialTheme.typography.titleMedium)
+                Text("持续 P2P 监听授权", style = MaterialTheme.typography.titleMedium)
+                Text("这是独立的本机授权。开启后，应用进程或守护服务正常重建时可恢复UDP监听；Android强行停止应用后不能保证自行恢复。关闭公共信令会同时撤销此授权。")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = !busy && signalReady && !directActive, onClick = {
+                    if (continuousDirectEnabled) {
+                        OutlinedButton(enabled = !busy, onClick = {
+                            manager.configureDirectListenerAuthorization(false)
+                            refresh()
+                            publicP2pFeedback = "持续P2P监听授权已撤销，UDP端口已关闭。"
+                        }) { Text("关闭持续监听") }
+                    } else {
+                        Button(enabled = !busy && signalEnabled, onClick = {
+                            publicP2pFeedback = runCatching {
+                                manager.configureDirectListenerAuthorization(true)
+                                refresh()
+                                "已保存持续P2P监听授权；网络恢复后会自动刷新候选地址。"
+                            }.getOrElse { "授权失败：" + (it.message ?: "请先开启本机监听和公共信令") }
+                        }) { Text("授权持续监听") }
+                    }
+                }
+                HorizontalDivider()
+                Text("P2P 一次性直连测试", style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(enabled = !busy && signalReady && !directActive &&
+                        !continuousDirectEnabled, onClick = {
                         publicP2pFeedback = runCatching {
                             manager.startPublicDirectTest()
                             manager.probeAsync()
@@ -2944,7 +2966,7 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             "已开始尝试直连。两部手机都要开启，稍后查看状态。"
                         }.getOrElse { "启动失败：${it.message ?: "未知原因"}" }
                     }) { Text("开始 P2P 测试") }
-                    OutlinedButton(enabled = directActive, onClick = {
+                    OutlinedButton(enabled = directActive && !continuousDirectEnabled, onClick = {
                         manager.stopPublicDirectTest()
                         refresh()
                         publicP2pFeedback = "P2P 测试已停止，UDP 端口已关闭。"

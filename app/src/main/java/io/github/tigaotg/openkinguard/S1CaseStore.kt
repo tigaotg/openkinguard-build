@@ -138,6 +138,8 @@ data class ExerciseState(
     val relayRemarks: Map<String, String> = emptyMap(),
     /** A subject can deny future remote-assist requests from individual signed helpers. */
     val remoteAssistBlockedRelations: Set<String> = emptySet(),
+    /** Separate explicit consent for persistent UDP/P2P listening; disabled by default. */
+    val directUdpListenerEnabled: Boolean = false,
 )
 
 /** Transactional encrypted local exercise log. Identity key and pairings are never changed. */
@@ -370,7 +372,9 @@ internal class S1CaseStore(context: Context) {
             remoteAssistBlockedRelations =
                 (root.optJSONArray("remoteAssistBlockedRelations") ?: JSONArray()).let { ids ->
                     (0 until ids.length()).map { ids.getString(it) }.toSet()
-                })
+                },
+            directUdpListenerEnabled = root.optBoolean("directUdpListenerEnabled", false)
+        )
     }
 
     private fun save(state: ExerciseState) {
@@ -468,6 +472,7 @@ internal class S1CaseStore(context: Context) {
         root.put("locationSharingRelations", JSONArray(state.locationSharingRelations.toList()))
         root.put("remoteAssistBlockedRelations",
             JSONArray(state.remoteAssistBlockedRelations.toList()))
+        root.put("directUdpListenerEnabled", state.directUdpListenerEnabled)
         root.put("receivedLocations", JSONArray().apply {
             state.receivedLocations.takeLast(200).forEach { fix ->
                 put(JSONObject().put("relation", fix.relationId)

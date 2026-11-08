@@ -15,7 +15,8 @@ internal object S5DirectCandidatePolicy {
         return runCatching {
             val address = InetAddress.getByName(ip)
             require(!address.isAnyLocalAddress && !address.isLoopbackAddress &&
-                !address.isLinkLocalAddress && !address.isMulticastAddress)
+                !address.isLinkLocalAddress && !address.isSiteLocalAddress &&
+                !address.isMulticastAddress)
             Candidate(address.hostAddress.orEmpty(), port, expires)
         }.getOrNull()
     }

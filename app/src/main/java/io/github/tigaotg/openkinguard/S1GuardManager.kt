@@ -346,8 +346,25 @@ class S1GuardManager(context: Context) {
         signal()
     }
 
+    fun directListenerAuthorizationEnabled(): Boolean =
+        store.snapshot().directUdpListenerEnabled
+
+    /** Independent persistent opt-in; never inferred from public Nostr consent. */
+    fun configureDirectListenerAuthorization(enabled: Boolean) {
+        if (enabled) {
+            require(listener?.isClosed == false) { "请先启动本机守护监听" }
+            require(store.snapshot().nostrRelayEnabled) { "请先开启公共信令" }
+        }
+        store.update { state ->
+            state.copy(directUdpListenerEnabled = enabled) to Unit
+        }
+        if (enabled) direct.start() else direct.stop()
+        signal()
+    }
+
     fun stopPublicDirectTest() {
-        direct.stop()
+        // A one-shot test button cannot revoke a separately granted persistent listener.
+        if (!store.snapshot().directUdpListenerEnabled) direct.stop()
         signal()
     }
 
@@ -743,7 +760,7 @@ class S1GuardManager(context: Context) {
         if (usedRelay) relayVerifiedAt[peer.relationId] = System.currentTimeMillis()
         directEndpoint?.let { direct.confirmSignedReply(peer.peerFingerprint, it) }
     }
-    fun selfTestPublicUdpMapping(): String = S5StunDiagnostic.run()
+    fun selfTestPublicUdpMapping(): String = S5StunDiagnostic.run(app)
     fun verifiedByRelay(relationId: String): Boolean = relayConnected() &&
         (System.currentTimeMillis() - (relayVerifiedAt[relationId] ?: 0L)) in 0..120_000L
 
@@ -813,10 +830,16 @@ class S1GuardManager(context: Context) {
         val endpoints = if (enabled) S2NostrTransport.normalizeList(rawEndpoints)
             .joinToString("\n") else store.snapshot().nostrRelayEndpoints
         store.update { state ->
-            state.copy(nostrRelayEndpoints = endpoints, nostrRelayEnabled = enabled) to Unit
+            state.copy(
+                nostrRelayEndpoints = endpoints,
+                nostrRelayEnabled = enabled,
+                directUdpListenerEnabled = if (enabled) state.directUdpListenerEnabled else false
+            ) to Unit
         }
         if (listener?.isClosed == false) publicNostr.configure(endpoints, enabled)
         else publicNostr.configure("", false)
+        if (enabled && store.snapshot().directUdpListenerEnabled &&
+            listener?.isClosed == false) direct.start()
         signal()
     }
 
@@ -1829,6 +1852,9 @@ class S1GuardManager(context: Context) {
         if (setting.nostrRelayEnabled) runCatching {
             publicNostr.configure(setting.nostrRelayEndpoints, true)
         }.onFailure { diagnostic("Nostr公共节点配置", it.message ?: "配置无效") }
+        if (setting.directUdpListenerEnabled && setting.nostrRelayEnabled) runCatching {
+            direct.start()
+        }.onFailure { diagnostic("持续UDP监听恢复", it.message ?: "无法恢复UDP监听") }
         signal()
     }
 

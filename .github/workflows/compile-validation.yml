@@ -7,6 +7,11 @@ on:
       - '.github/workflows/compile-validation.yml'
       - 'app/src/main/java/io/github/tigaotg/openkinguard/S2*'
       - 'app/src/test/java/io/github/tigaotg/openkinguard/NetworkReconnectPolicyTest.kt'
+      - 'app/src/test/java/io/github/tigaotg/openkinguard/S5DirectCandidatePolicyTest.kt'
+      - 'app/src/main/java/io/github/tigaotg/openkinguard/S5*'
+      - 'app/src/main/java/io/github/tigaotg/openkinguard/S1CaseStore.kt'
+      - 'app/src/main/java/io/github/tigaotg/openkinguard/S1GuardManager.kt'
+      - 'app/src/main/java/io/github/tigaotg/openkinguard/S1CompactSection.kt'
       - 'app/src/**'
       - 'app/build.gradle.kts'
       - 'core/**'
@@ -51,6 +56,7 @@ jobs:
             :app:compilePilotV4Kotlin \
             :app:testDebugUnitTest \
               --tests io.github.tigaotg.openkinguard.NetworkReconnectPolicyTest \
+              --tests io.github.tigaotg.openkinguard.S5DirectCandidatePolicyTest \
             --stacktrace
       - name: Preserve JVM test reports (no APK artifacts)
         if: always()
