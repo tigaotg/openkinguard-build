@@ -1039,11 +1039,24 @@ class S1GuardManager(context: Context) {
         signal()
     }
 
-    /** Incoming check-ins stay visible on the home page until explicitly acknowledged. */
+    /** Marking a received check-in read is the family's explicit confirmation action. */
     fun markIncomingCheckinsRead() {
         store.update { state ->
+            val unread = state.checkins.filter {
+                !it.own && it.timestamp > state.lastReadCheckinTimestamp
+            }.map { it.eventId }.toSet()
             val latest = state.checkins.filterNot { it.own }.maxOfOrNull { it.timestamp } ?: 0L
-            state.copy(lastReadCheckinTimestamp = maxOf(state.lastReadCheckinTimestamp, latest)) to Unit
+            val now = System.currentTimeMillis()
+            val updatedCheckins = state.checkins.map { item ->
+                if (!item.own && item.eventId in unread) {
+                    val progress = item.deliveryProgress[item.relationId] ?: DeliveryProgress()
+                    item.copy(deliveryProgress = item.deliveryProgress +
+                        (item.relationId to progress.copy(
+                            familyConfirmedAt = maxOf(progress.familyConfirmedAt, now))))
+                } else item
+            }
+            state.copy(lastReadCheckinTimestamp = maxOf(state.lastReadCheckinTimestamp, latest),
+                checkins = updatedCheckins) to Unit
         }
         signal()
     }
@@ -2295,7 +2308,8 @@ class S1GuardManager(context: Context) {
     /** Creates and durably stores one immutable signed ciphertext frame before attempting transport. */
     private fun enqueueCaseOutbox(peer: SavedPeer, node: DiscoveredNode?,
                                   kind: String, eventId: String): DeliveryOutboxEntry {
-        require(kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN, S1CaseWire.CLOSE))
+        require(kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN,
+            S1CaseWire.CLOSE, S1CaseWire.CHECKIN_CONFIRM))
         val now = System.currentTimeMillis()
         val existing = store.snapshot().deliveryOutbox.firstOrNull {
             it.eventId == eventId && it.relationId == peer.relationId &&
@@ -2385,6 +2399,16 @@ class S1GuardManager(context: Context) {
                                         relayAcceptedAt = maxOf(previous.relayAcceptedAt, progress.relayAcceptedAt))))
                             } else item
                         })
+                    S1CaseWire.CHECKIN_CONFIRM -> updated = updated.copy(
+                        checkins = updated.checkins.map { item ->
+                            if (!item.own && item.eventId == target.eventId &&
+                                item.relationId == target.relationId) {
+                                val previous = item.deliveryProgress[target.relationId] ?: DeliveryProgress()
+                                item.copy(deliveryProgress = item.deliveryProgress +
+                                    (target.relationId to previous.copy(
+                                        relayAcceptedAt = maxOf(previous.relayAcceptedAt, progress.relayAcceptedAt))))
+                            } else item
+                        })
                 }
             }
             updated to Unit
@@ -2409,7 +2433,7 @@ class S1GuardManager(context: Context) {
         try {
             val (replyBytes, usedRelay, directEndpoint) = sendSignedFrame(peer, node, frame, 3000,
                 allowTemporaryQueue = store.snapshot().relayOfflineQueueEnabled &&
-                    kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN))
+                    kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN, S1CaseWire.CHECKIN_CONFIRM))
             val reply = LanTestWire.decode(replyBytes)
             require(reply.message.payloadKind in S1CaseWire.expectedResponse(kind)) {
                 "签名回执类型与可靠投递消息不匹配"
@@ -2445,7 +2469,14 @@ class S1GuardManager(context: Context) {
             return listOf("没有已授权帮助者：本机事件不会发给他人。双向求救需另一条反向帮助关系")
         }
 
-        val activeEventIds = (cases.map { it.eventId } + listOfNotNull(latestCheckin?.eventId)).toSet()
+        val pendingConfirmations = state.checkins.filter { item ->
+            if (item.own) false else {
+                val progress = item.deliveryProgress[item.relationId] ?: DeliveryProgress()
+                progress.familyConfirmedAt > 0L && progress.deviceReceivedAt == 0L
+            }
+        }
+        val activeEventIds = (cases.map { it.eventId } +
+            listOfNotNull(latestCheckin?.eventId) + pendingConfirmations.map { it.eventId }).toSet()
         store.update { current ->
             current.copy(deliveryOutbox = current.deliveryOutbox.filter {
                 it.eventId in activeEventIds &&
@@ -2485,6 +2516,20 @@ class S1GuardManager(context: Context) {
                         CommandFailureExplainer.explain(error).message
                     errors += detail
                 }
+            }
+        }
+        for (checkin in pendingConfirmations) {
+            val peer = relations().firstOrNull {
+                it.role == PairingRole.HELPER && it.relationId == checkin.relationId
+            } ?: continue
+            val endpoint = verified[peer.relationId]?.let { nodes[it] }
+            try {
+                deliverCaseOutbox(peer, endpoint, S1CaseWire.CHECKIN_CONFIRM, checkin.eventId)
+            } catch (error: Exception) {
+                val detail = if (error is RelayQueuedException)
+                    "中继已暂存家属确认，但尚未收到原设备签名回执"
+                else "家属确认尚未回传：" + CommandFailureExplainer.explain(error).message
+                errors += detail
             }
         }
         signal()
@@ -2604,6 +2649,7 @@ class S1GuardManager(context: Context) {
         val requestKind = when (reply.message.payloadKind) {
             S1CaseWire.RECEIPT -> S1CaseWire.SOS
             S1CaseWire.CHECKIN_RECEIPT -> S1CaseWire.CHECKIN
+            S1CaseWire.CHECKIN_CONFIRM_RECEIPT -> S1CaseWire.CHECKIN_CONFIRM
             S1CaseWire.CLOSED -> S1CaseWire.CLOSE
             else -> return
         }
@@ -2811,6 +2857,27 @@ class S1GuardManager(context: Context) {
                         freshlyReceivedCheckin = newer
                     }
                     S1CaseWire.CHECKIN_RECEIPT
+                }
+                S1CaseWire.CHECKIN_CONFIRM -> {
+                    require(peer.role == PairingRole.SUBJECT) {
+                        "只有原报平安设备可以接收家属确认"
+                    }
+                    val ownCheckin = updated.checkins.firstOrNull {
+                        it.own && it.eventId == msg.eventId.value &&
+                            DeviceActionPolicy.canDeliverCheckin(it.targetRelationId, peer.relationId)
+                    } ?: throw IllegalArgumentException("找不到这条关系下的原始报平安")
+                    if (!duplicate) {
+                        val now = System.currentTimeMillis()
+                        updated = updated.copy(checkins = updated.checkins.map { item ->
+                            if (item.own && item.eventId == ownCheckin.eventId) {
+                                val progress = item.deliveryProgress[peer.relationId] ?: DeliveryProgress()
+                                item.copy(deliveryProgress = item.deliveryProgress +
+                                    (peer.relationId to progress.copy(
+                                        familyConfirmedAt = maxOf(progress.familyConfirmedAt, now))))
+                            } else item
+                        })
+                    }
+                    S1CaseWire.CHECKIN_CONFIRM_RECEIPT
                 }
                 S1CaseWire.PROFILE -> S1CaseWire.PROFILE_REPLY
                 S1CaseWire.CLAIM -> {
@@ -3138,6 +3205,15 @@ class S1GuardManager(context: Context) {
                         item.copy(deliveredRelations = item.deliveredRelations + peer.relationId,
                             deliveryProgress = item.deliveryProgress +
                                 (peer.relationId to received(progress)))
+                    } else item
+                })
+            }
+            if (requestKind == S1CaseWire.CHECKIN_CONFIRM) {
+                updated = updated.copy(checkins = updated.checkins.map { item ->
+                    if (!item.own && item.eventId == eventId && item.relationId == peer.relationId) {
+                        val progress = item.deliveryProgress[peer.relationId] ?: DeliveryProgress()
+                        item.copy(deliveryProgress = item.deliveryProgress +
+                            (peer.relationId to received(progress)))
                     } else item
                 })
             }
