@@ -1,4 +1,5 @@
 """Focused OpenWrt offline spool persistence and fail-closed tests."""
+import asyncio
 import base64
 import os
 import pathlib
@@ -59,6 +60,23 @@ class SpoolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(relay.offline[0].expires_at, expiry)
             self.assertEqual(relay.offline[0].sender_request_id, "req-2")
             self.assertEqual(Relay({a, b}, queue_dir=directory).offline[0].data, two)
+
+    async def test_expired_ciphertext_is_purged_while_relay_is_idle(self):
+        a, b = "a" * 64, "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            relay = Relay({a, b}, queue_dir=directory)
+            self.assertTrue(await relay.enqueue(a, b, frame(a, b), "expiry"))
+            self.assertEqual(len(OfflineQueueStore(directory).load()), 1)
+            relay.offline[0].expires_at = 0
+            task = asyncio.create_task(relay.cleanup_loop(0.01))
+            try:
+                await asyncio.sleep(0.04)
+                self.assertEqual(relay.offline, [])
+                self.assertEqual(OfflineQueueStore(directory).load(), [])
+            finally:
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
 
     async def test_plaintext_never_written_to_spool(self):
         a, b = "a" * 64, "b" * 64

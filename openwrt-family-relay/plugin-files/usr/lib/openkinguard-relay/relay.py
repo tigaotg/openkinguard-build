@@ -159,6 +159,15 @@ class Relay:
                 self.queue_store.delete(item.request_id)
         self.offline = keep
 
+    async def cleanup_loop(self, interval_seconds: float = 30.0) -> None:
+        """Expire ciphertext files and revoked-device queue entries even when idle."""
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                self.prune_offline()
+            except OSError as exc:
+                LOG.warning("Offline queue cleanup failed (will retry): %s", exc)
+
     def mark_queued_idle(self, request_id: str) -> None:
         for item in self.offline:
             if item.request_id == request_id:
@@ -526,7 +535,15 @@ async def run(host: str, port: int, tls_cert: str | None, tls_key: str | None,
                      max_size=MAX_MESSAGE_BYTES, max_queue=16, ping_interval=25,
                      ping_timeout=20, compression=None):
         LOG.info("Relay listening at %s:%d%s/relay", host, port, " TLS " if context else "")
-        await asyncio.Future()
+        cleanup = asyncio.create_task(relay.cleanup_loop())
+        try:
+            await asyncio.Future()
+        finally:
+            cleanup.cancel()
+            try:
+                await cleanup
+            except asyncio.CancelledError:
+                pass
 
 
 def main() -> None:
