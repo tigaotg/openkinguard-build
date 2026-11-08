@@ -339,7 +339,6 @@ internal class S2NostrTransport(
                         ws.close(1000, "stale"); return
                     }
                     slot.live = true
-                    slot.lastCommunicationAtMillis = System.currentTimeMillis()
                     slot.lastFailureReason = null
                     slot.inboxSubscribed = false
                     slot.cardAccepted = false

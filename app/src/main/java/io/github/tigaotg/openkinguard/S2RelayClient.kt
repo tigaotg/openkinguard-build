@@ -127,7 +127,6 @@ internal class S2RelayClient(
                     return
                 }
                 socketConnected = true
-                lastCommunicationAtMillis = System.currentTimeMillis()
                 status = "WSS已连接，等待中继身份挑战"
                 onChanged()
             }
@@ -157,7 +156,6 @@ internal class S2RelayClient(
                             val capabilities = json.optJSONArray("caps")
                             familyCapabilities = (0 until (capabilities?.length() ?: 0))
                                 .mapNotNull { capabilities?.optString(it) }.toSet()
-                            reconnectAttempt = 0
                             status = "公网中继已连接（已验证本机公钥）"
                             onChanged()
                         }
