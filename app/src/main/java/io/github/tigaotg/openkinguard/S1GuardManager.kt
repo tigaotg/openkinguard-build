@@ -2890,9 +2890,14 @@ class S1GuardManager(context: Context) {
                     else {
                         newlyAcceptedClaim = ownCase.acceptedBy.isEmpty()
                         updated = updated.copy(cases = updated.cases.map {
-                            if (it.eventId == ownCase.eventId && it.ownSos)
+                            if (it.eventId == ownCase.eventId && it.ownSos) {
+                                val progress = it.deliveryProgress[peer.relationId] ?: DeliveryProgress()
                                 it.copy(status = ExerciseStatus.ACCEPTED,
-                                    acceptedBy = peer.peerFingerprint) else it
+                                    acceptedBy = peer.peerFingerprint,
+                                    deliveryProgress = it.deliveryProgress + (peer.relationId to
+                                        progress.copy(familyConfirmedAt = maxOf(progress.familyConfirmedAt,
+                                            System.currentTimeMillis()))))
+                            } else it
                         })
                         S1CaseWire.ACCEPT
                     }

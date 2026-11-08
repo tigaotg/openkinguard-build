@@ -2332,7 +2332,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                             Text("${helper?.let { peerName(it.relationId, it.peerFingerprint) } ?: "已验证救助者"} 已接手",
                                                 color = MaterialTheme.colorScheme.primary)
                                         }
-                                        Text("签名送达回执：${item.deliveredRelations.size} 个")
+                                        val relayAccepted = item.deliveryProgress.values.count { it.relayAcceptedAt > 0L }
+                                        val phoneReceived = item.deliveryProgress.values.count { it.deviceReceivedAt > 0L }
+                                        val familyConfirmed = item.deliveryProgress.values.count { it.familyConfirmedAt > 0L }
+                                        Text("中继已接收：$relayAccepted · 手机已收到：$phoneReceived · 家属已确认：$familyConfirmed")
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             TextButton(enabled = !busy, onClick = {
                                                 runTask("重试当前求助") {
@@ -2416,8 +2419,19 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                                         record.timestamp > snapshot.history.lastReadCheckinTimestamp) {
                                         Text("未读", color = MaterialTheme.colorScheme.primary)
                                     }
+                                    if (!record.own) {
+                                        val progress = record.deliveryProgress[record.relationId] ?: DeliveryProgress()
+                                        if (progress.familyConfirmedAt > 0L) {
+                                            Text(if (progress.deviceReceivedAt > 0L)
+                                                "家属已确认 · 原设备已收到确认回执"
+                                                else "家属已确认 · 正在等待原设备签名回执")
+                                        }
+                                    }
                                     if (record.own) {
-                                        Text("签名送达回执：${record.deliveredRelations.size} 个")
+                                        val relayAccepted = record.deliveryProgress.values.count { it.relayAcceptedAt > 0L }
+                                        val phoneReceived = record.deliveryProgress.values.count { it.deviceReceivedAt > 0L }
+                                        val familyConfirmed = record.deliveryProgress.values.count { it.familyConfirmedAt > 0L }
+                                        Text("中继已接收：$relayAccepted · 手机已收到：$phoneReceived · 家属已确认：$familyConfirmed")
                                         if (record.deliveredRelations.isEmpty()) {
                                             TextButton(enabled = !busy, onClick = {
                                                 runTask("重试报平安") {
@@ -3194,11 +3208,11 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         })
                 }
                 InlineActionFeedback(privateConfigFeedback)
-                FeatureHelp("私人中继安全说明：必须使用系统可信 TLS 证书，或显式核对并固定私有节点 SPKI 公钥指纹（均为 wss://）。" +
-                    "单凭 IP 地址绝不可跳过 TLS 身份校验。节点可知道设备连接状态和收发时间，" +
-                    "但无法伪造设备签名；走此私人中继的普通 SOS/报平安消息仍不是端到端加密，" +
-                    "精确 GPS 坐标继续采用单次端到端加密。对方离线时，测试 SOS/报平安可在" +
-                    "中继内存中短暂排队（最长5分钟，非送达回执，节点重启即丢失）。" +
+                FeatureHelp("私人中继必须使用系统可信 TLS 证书，或显式核对并固定私有节点 SPKI 公钥指纹（均为 wss://）。" +
+                    "单凭 IP 地址绝不可跳过 TLS 身份校验。SOS、报平安、结案和家属确认正文均使用设备签名绑定的 ECDH/AES-GCM 端到端加密；" +
+                    "中继只能看到关系路由、连接状态、报文大小和时间，不能读取正文。精确 GPS 坐标仍使用独立的单次端到端加密。" +
+                    "本机加密离线队列最长保存7天；用户允许时，中继还可在内存中暂存最多5分钟，节点重启即丢失。" +
+                    "中继已接收不等于手机已收到；只有对端设备签名回执才表示手机收到；家属确认是独立的应用操作。" +
                     "手机后台仍受系统省电策略限制。",
                     label = "安全与离线暂存说明")
                 }
