@@ -1,4 +1,4 @@
-name: OpenKinGuard Phase 3 network source validation (no APK)
+name: OpenKinGuard Phase 4 SOS reliability validation (no APK)
 
 on:
   workflow_dispatch:
@@ -47,7 +47,7 @@ jobs:
           yes | timeout 600 sdkmanager --licenses
           timeout 600 sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
-      - name: Run Phase 3 source compilation and focused network tests (no APK/AAB tasks)
+      - name: Compile source and run focused phase 4 message tests (no APK/AAB tasks)
         run: |
           # Source-only validation. Never add assemble*, bundle*, package*, install*,
           # or connected Android test tasks to this workflow.
@@ -77,7 +77,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase3-network-test-reports
+          name: phase4-message-test-reports
           path: |
             app/build/test-results/testDebugUnitTest/*.xml
             core/model/build/test-results/test/*.xml

@@ -2415,10 +2415,58 @@ class S1GuardManager(context: Context) {
         }
     }
 
-    /** Sends the persisted frame, never regenerating a nonce or signature on a retry. */
+    /**
+     * The persisted ciphertext stays valid across process restarts. On a later send attempt
+     * we re-encrypt it under a fresh signed sequence, preventing the 64-sequence replay
+     * window from permanently rejecting a week-old SOS after many heartbeats.
+     *
+     * The message ID and absolute expiry never change, so device/event dedup remains stable.
+     */
+    private fun resealPendingCaseFrame(peer: SavedPeer, original: DeliveryOutboxEntry):
+        DeliveryOutboxEntry {
+        val now = System.currentTimeMillis()
+        if (!S4DeliveryPolicy.shouldResealForRetry(original.attemptCount,
+                original.expiresAt, now)) return original
+        val state = store.snapshot()
+        val sourceTime = when (original.payloadKind) {
+            S1CaseWire.SOS -> state.cases.firstOrNull {
+                it.ownSos && it.eventId == original.eventId
+            }?.createdAt
+            S1CaseWire.CHECKIN -> state.checkins.firstOrNull {
+                it.own && it.eventId == original.eventId
+            }?.timestamp
+            else -> null
+        }
+        val body = S1CaseWire.request(original.relationId, original.eventId,
+            sourceTime, ownNickname())
+        // Never fall back to plaintext: if the cached signed card has expired while
+        // offline, the previously sealed frame may still be retried unchanged.
+        val signed = runCatching {
+            signedMessage(peer, original.payloadKind, original.eventId, body,
+                validForMillis = original.expiresAt - now)
+        }.getOrNull() ?: return original
+        require(signed.message.messageId.value == original.messageId) {
+            "可靠投递重签后逻辑消息ID发生变化"
+        }
+        val frame = LanTestWire.encode(signed)
+        require(frame.size <= S4DeliveryPolicy.MAX_FRAME_BYTES)
+        val renewed = original.copy(
+            createdAt = signed.message.createdEpochMillis,
+            frameBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(frame))
+        return store.update { current ->
+            val found = current.deliveryOutbox.firstOrNull { it.messageId == original.messageId }
+            if (found == null || found.expiresAt != original.expiresAt)
+                current to original
+            else current.copy(deliveryOutbox = current.deliveryOutbox.map {
+                if (it.messageId == original.messageId) renewed else it
+            }) to renewed
+        }
+    }
+
+    /** Re-sign retries with the same stable message ID and original expiry. */
     private fun deliverCaseOutbox(peer: SavedPeer, node: DiscoveredNode?,
                                   kind: String, eventId: String): String? {
-        val entry = enqueueCaseOutbox(peer, node, kind, eventId)
+        var entry = enqueueCaseOutbox(peer, node, kind, eventId)
         val now = System.currentTimeMillis()
         if (S4DeliveryPolicy.isExpired(entry.expiresAt, now)) {
             store.update { state ->
@@ -2429,6 +2477,7 @@ class S1GuardManager(context: Context) {
             return null
         }
         if (!S4DeliveryPolicy.isDue(entry.nextAttemptAt, entry.expiresAt, now)) return null
+        entry = resealPendingCaseFrame(peer, entry)
         val frame = Base64.getUrlDecoder().decode(entry.frameBase64)
         try {
             val (replyBytes, usedRelay, directEndpoint) = sendSignedFrame(peer, node, frame, 3000,
@@ -3286,7 +3335,7 @@ class S1GuardManager(context: Context) {
             else 120_000L
         val senderId = DeviceId("okg-" + own)
         val recipientId = DeviceId("okg-" + peer.peerFingerprint)
-        val messageId = if (kind in S1CaseWire.encryptedKinds)
+        val messageId = if (S4DeliveryPolicy.usesStableMessageId(kind))
             S4MessageWire.stableMessageId(eventId, peer.relationId, senderId.value,
                 recipientId.value, kind)
         else MessageId(UUID.randomUUID().toString())

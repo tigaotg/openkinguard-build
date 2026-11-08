@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import io.github.tigaotg.openkinguard.security.protocol.NostrSchnorr
 import io.github.tigaotg.openkinguard.security.protocol.PairingQrProtocol
+import io.github.tigaotg.openkinguard.security.protocol.S4DeliveryPolicy
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
@@ -164,7 +165,7 @@ internal class S2PublicNostrCrypto(context: Context, private val deviceKeys: And
     fun messageEncryptionCard(identity: LocalIdentity): String {
         val fingerprint = deviceKeys.createOrLoad().fingerprint
         val issued = System.currentTimeMillis()
-        val expires = issued + 24 * 60 * 60_000L
+        val expires = issued + S4DeliveryPolicy.KEY_CARD_TTL_MILLIS
         val body = messageEncryptionCardBody(fingerprint, identity.agreementPublic, issued, expires)
         val signature = b64(deviceKeys.signNostrContactCard(body))
         return listOf("1", fingerprint, identity.agreementPublic, issued.toString(),
@@ -182,8 +183,7 @@ internal class S2PublicNostrCrypto(context: Context, private val deviceKeys: And
         val issued = fields[3].toLongOrNull() ?: error("Invalid encryption key issue time")
         val expires = fields[4].toLongOrNull() ?: error("Invalid encryption key expiry")
         require(fingerprint == pinnedPeer.peerFingerprint)
-        require(issued in (now - 48 * 60 * 60_000L)..(now + 60_000L))
-        require(expires in now..(issued + 24 * 60 * 60_000L))
+        require(S4DeliveryPolicy.isValidKeyCardWindow(issued, expires, now))
         require(agreementPublic.length in 70..300)
         PairingQrProtocol.publicKey(unb64(agreementPublic))
         val public = PairingQrProtocol.publicKey(unb64(pinnedPeer.peerPublicKeyBase64))
