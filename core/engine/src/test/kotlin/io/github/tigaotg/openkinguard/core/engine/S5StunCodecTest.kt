@@ -46,7 +46,8 @@ class S5StunCodecTest {
         val frame = S5StunCodec.bindingRequest(transaction).also {
             it[0] = 1
             it[1] = 1
-            it[3] = 20
+            // Attribute body is 20 bytes plus its 4-byte attribute header.
+            it[3] = 24
         } + byteArrayOf(
             0x00, 0x20, 0x00, 0x14, 0x00, 0x02,
             (port xor 0x2112).ushr(8).toByte(), (port xor 0x2112).toByte()
