@@ -68,7 +68,24 @@ internal class S5DirectUdp(
     private val inFlight = AtomicInteger()
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var boundNetwork: Network? = null
+    @Volatile private var boundLinkProperties: android.net.LinkProperties? = null
     @Volatile private var requested = false
+    private var networkCallbackRegistered = false
+    private var pendingNetworkChange: ScheduledFuture<*>? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = scheduleNetworkChange()
+        override fun onLost(network: Network) = scheduleNetworkChange()
+        override fun onCapabilitiesChanged(
+            network: Network, capabilities: android.net.NetworkCapabilities
+        ) {
+            if (connectivity.activeNetwork == network) scheduleNetworkChange()
+        }
+        override fun onLinkPropertiesChanged(
+            network: Network, properties: android.net.LinkProperties
+        ) {
+            if (connectivity.activeNetwork == network) scheduleNetworkChange()
+        }
+    }
     @Volatile private var localCandidates: List<S5DirectCandidatePolicy.Candidate> = emptyList()
     @Volatile private var lastDiagnostic = "UDP监听未启动"
     @Volatile private var lastFailureReason: String? = null
@@ -126,6 +143,7 @@ internal class S5DirectUdp(
 
     @Synchronized fun start() {
         requested = true
+        registerNetworkCallback()
         if (active) return
         localIdentity
         openSocketForCurrentNetwork()
@@ -135,6 +153,9 @@ internal class S5DirectUdp(
         requested = false
         socketRetryFuture?.cancel(false)
         socketRetryFuture = null
+        pendingNetworkChange?.cancel(false)
+        pendingNetworkChange = null
+        unregisterNetworkCallback()
         releaseTransport("UDP持续监听授权已关闭")
         lastDiagnostic = "已停止，本机UDP端口关闭"
         onChanged()
@@ -145,6 +166,7 @@ internal class S5DirectUdp(
         val network = connectivity.activeNetwork
         if (network == null) {
             boundNetwork = null
+            boundLinkProperties = null
             lastFailureReason = "NO_DEFAULT_NETWORK"
             lastDiagnostic = "当前没有默认网络，等待网络恢复"
             onChanged()
@@ -164,6 +186,7 @@ internal class S5DirectUdp(
             runCatching { created.close() }
             socket = null
             boundNetwork = null
+            boundLinkProperties = null
             lastFailureReason = error.message ?: error.javaClass.simpleName
             lastDiagnostic = "无法将UDP监听绑定到当前网络：" + lastFailureReason
             onChanged()
@@ -172,6 +195,7 @@ internal class S5DirectUdp(
         }
         socket = created
         boundNetwork = network
+        boundLinkProperties = connectivity.getLinkProperties(network)
         socketRetryAttempt = 0
         socketRetryFuture?.cancel(false)
         socketRetryFuture = null
@@ -201,10 +225,19 @@ internal class S5DirectUdp(
     @Synchronized
     fun networkChanged() {
         if (!requested) return
+        val network = connectivity.activeNetwork
+        val currentLinkProperties = network?.let { connectivity.getLinkProperties(it) }
+        val shouldRebind = S5DirectMaintenancePolicy.shouldRebindSocket(
+            socketActive = active,
+            sameNetwork = network == boundNetwork,
+            sameLinkProperties = currentLinkProperties == boundLinkProperties
+        )
+        // Public Nostr and the direct transport both observe network changes.
+        // Do not tear down a freshly rebound socket twice for the same callback.
+        if (!shouldRebind) return
         socketRetryFuture?.cancel(false)
         socketRetryFuture = null
         releaseTransport("Android网络变化，旧UDP映射和直连路径已失效")
-        val network = connectivity.activeNetwork
         if (network == null) {
             lastDiagnostic = "当前无默认网络；等待Wi-Fi或移动数据恢复"
             lastFailureReason = "NO_DEFAULT_NETWORK"
@@ -216,6 +249,38 @@ internal class S5DirectUdp(
         onChanged()
     }
 
+    @Synchronized
+    private fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
+        runCatching {
+            connectivity.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered = true
+        }.onFailure { error ->
+            lastFailureReason = error.message ?: error.javaClass.simpleName
+            lastDiagnostic = "无法监听系统网络变化：" + lastFailureReason
+            onChanged()
+        }
+    }
+
+    @Synchronized
+    private fun unregisterNetworkCallback() {
+        if (!networkCallbackRegistered) return
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        networkCallbackRegistered = false
+    }
+
+    @Synchronized
+    private fun scheduleNetworkChange() {
+        if (!requested) return
+        pendingNetworkChange?.cancel(false)
+        pendingNetworkChange = scheduler.schedule({
+            synchronized(this) {
+                pendingNetworkChange = null
+                if (requested) networkChanged()
+            }
+        }, 1_200L, TimeUnit.MILLISECONDS)
+    }
+
     private fun releaseTransport(reason: String) {
         generation++
         gatherFuture?.cancel(false)
@@ -223,6 +288,7 @@ internal class S5DirectUdp(
         socket?.close()
         socket = null
         boundNetwork = null
+        boundLinkProperties = null
         localCandidates = emptyList()
         peerCandidates.clear()
         verifiedRoutes.clear()

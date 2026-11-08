@@ -15,6 +15,13 @@ internal object S5DirectMaintenancePolicy {
     const val IDLE_REFRESH_SECONDS = 300L
     const val BLOCKING_RECEIVE_TIMEOUT_MILLIS = 0
 
+    /** Rebind only when the socket, default Network, or its routes/addresses changed. */
+    fun shouldRebindSocket(
+        socketActive: Boolean,
+        sameNetwork: Boolean,
+        sameLinkProperties: Boolean
+    ): Boolean = !socketActive || !sameNetwork || !sameLinkProperties
+
     fun plan(activePeerCount: Int): S5DirectMaintenancePlan {
         require(activePeerCount >= 0)
         return if (activePeerCount > 0) {
