@@ -838,8 +838,11 @@ class S1GuardManager(context: Context) {
         }
         if (listener?.isClosed == false) publicNostr.configure(endpoints, enabled)
         else publicNostr.configure("", false)
-        if (enabled && store.snapshot().directUdpListenerEnabled &&
-            listener?.isClosed == false) direct.start()
+        if (S5DirectListenerPolicy.shouldRestore(
+                store.snapshot().directUdpListenerEnabled,
+                enabled,
+                localServiceRunning = listener?.isClosed == false
+            )) direct.start()
         signal()
     }
 
@@ -1760,7 +1763,20 @@ class S1GuardManager(context: Context) {
         val currentThread = listenerAcceptThread
         if (current != null && !current.isClosed && current.isBound &&
             !listenerUnexpectedlyClosed && currentThread != null &&
-            currentThread.state != Thread.State.TERMINATED) return
+            currentThread.state != Thread.State.TERMINATED) {
+            val setting = store.snapshot()
+            if (setting.nostrRelayEnabled) {
+                runCatching { publicNostr.configure(setting.nostrRelayEndpoints, true) }
+                    .onFailure { diagnostic("Nostr公共节点恢复", it.message ?: "配置无效") }
+            }
+            if (S5DirectListenerPolicy.shouldRestore(
+                    setting.directUdpListenerEnabled,
+                    setting.nostrRelayEnabled,
+                    localServiceRunning = true
+                )) runCatching { direct.start() }
+                    .onFailure { diagnostic("持续UDP监听恢复", it.message ?: "无法恢复UDP监听") }
+            return
+        }
 
         // A dead accept loop must not leave an apparently bound but unusable socket behind.
         runCatching { current?.close() }
@@ -1852,9 +1868,12 @@ class S1GuardManager(context: Context) {
         if (setting.nostrRelayEnabled) runCatching {
             publicNostr.configure(setting.nostrRelayEndpoints, true)
         }.onFailure { diagnostic("Nostr公共节点配置", it.message ?: "配置无效") }
-        if (setting.directUdpListenerEnabled && setting.nostrRelayEnabled) runCatching {
-            direct.start()
-        }.onFailure { diagnostic("持续UDP监听恢复", it.message ?: "无法恢复UDP监听") }
+        if (S5DirectListenerPolicy.shouldRestore(
+                setting.directUdpListenerEnabled,
+                setting.nostrRelayEnabled,
+                localServiceRunning = listener?.isClosed == false
+            )) runCatching { direct.start() }
+            .onFailure { diagnostic("持续UDP监听恢复", it.message ?: "无法恢复UDP监听") }
         signal()
     }
 

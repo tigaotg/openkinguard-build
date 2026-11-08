@@ -100,7 +100,9 @@ internal class S5DirectUdp(
             else "尚无成功直连"
             "UDP端口" + (socket?.localPort ?: 0) +
                 "；本机候选" + localCandidates.size + "个；对端候选" +
-                peerCandidates.values.sumOf { it.size } + "个；已验签直连设备" +
+                peerCandidates.values.sumOf { candidates ->
+                    candidates.count { S5DirectCandidatePolicy.fresh(it, now) }
+                } + "个；已验签直连设备" +
                 verifiedRoutes.count { verified(it.key) } + "个；候选刷新" +
                 candidateAge + "；最后成功通信" + communicationAge +
                 "；最近失败" + (lastFailureReason ?: "无") + "；" + lastDiagnostic
