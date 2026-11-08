@@ -168,6 +168,30 @@ class S1GuardManager(context: Context) {
     fun relayStatus(): String = relay.status + "；" + publicNostr.status + "；" + direct.status
     // S5: Nostr is signaling-only; it must NEVER qualify as a business relay.
     fun relayConnected(): Boolean = relay.connected
+    internal fun privateRelayDiagnostics(): List<PrivateRelayNodeDiagnostic> = relay.diagnostics()
+    internal fun localTcpListenerStatus(): String = tcpListenerHealth().displayLabel
+
+    internal fun connectionPeerDiagnostics(): List<PeerConnectionDiagnostic> {
+        val history = store.snapshot()
+        return relations().map { peer ->
+            val nickname = history.peerNicknames[peer.relationId].orEmpty().ifBlank {
+                history.verifiedPeerNicknames[peer.relationId].orEmpty()
+            }.ifBlank {
+                history.verifiedDeviceNicknames[peer.peerFingerprint].orEmpty()
+            }.ifBlank { "设备 ${peer.peerFingerprint.take(8)}" }
+            PeerConnectionDiagnostic(
+                relationId = peer.relationId,
+                displayName = nickname.take(32),
+                roleDescription = if (peer.role == PairingRole.SUBJECT)
+                    "对方是我的救助者" else "我正在帮助对方",
+                lanVerified = peer.relationId in verified,
+                relayVerified = verifiedByRelay(peer.relationId),
+                directVerified = direct.verified(peer.peerFingerprint),
+                lastSignedMessageAtMillis = history.lastVerifiedAt[peer.relationId] ?: 0L
+            )
+        }.sortedBy { it.displayName }
+    }
+
     fun familyRelayReady(): Boolean = relay.familyReady
     fun familyRelayPeers(): List<FamilyRelayPeer> = familyDiscoveredPeers
     fun canContinueFamilyPairing(): Boolean = familyPairingPeer != null

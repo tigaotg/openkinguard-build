@@ -11,6 +11,17 @@ import java.util.concurrent.TimeUnit
 
 data class FamilyRelayPeer(val fingerprint: String, val slot: Int)
 
+internal data class PrivateRelayNodeDiagnostic(
+    val index: Int,
+    val socketConnected: Boolean,
+    val identityAuthenticated: Boolean,
+    val familyPairingSupported: Boolean,
+    val offlineSpoolSupported: Boolean,
+    val lastCommunicationAtMillis: Long,
+    val status: String,
+    val lastFailureReason: String?
+)
+
 /** A failed family relay must not hide devices discovered on another healthy node. */
 internal object FamilyRelayDiscovery {
     fun collect(nodes: List<Pair<Int, () -> List<String>>>): List<FamilyRelayPeer> {
@@ -104,6 +115,24 @@ internal class S2RelayPool(
 
     val familyReady: Boolean
         get() = slots.take(endpoints.size).any { it.supportsFamilyPairing }
+
+    /** Redacted per-node state for the user-facing connection status screen. */
+    fun diagnostics(): List<PrivateRelayNodeDiagnostic> {
+        val configured = endpoints
+        return configured.indices.map { index ->
+            val client = slots[index]
+            PrivateRelayNodeDiagnostic(
+                index = index + 1,
+                socketConnected = client.socketConnected,
+                identityAuthenticated = client.connected,
+                familyPairingSupported = client.supportsFamilyPairing,
+                offlineSpoolSupported = client.supportsOfflineSpool,
+                lastCommunicationAtMillis = client.lastCommunicationAtMillis,
+                status = client.status.take(100),
+                lastFailureReason = client.lastFailureReason?.take(120)
+            )
+        }
+    }
 
     fun familyPeers(): List<FamilyRelayPeer> = FamilyRelayDiscovery.collect(slots.take(endpoints.size)
         .mapIndexedNotNull { index, client ->

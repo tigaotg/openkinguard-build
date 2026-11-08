@@ -189,6 +189,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     var identityInfo by remember { mutableStateOf("") }
     var backgroundListening by remember { mutableStateOf(S1Runtime.isBackgroundListening()) }
     var backgroundReadiness by remember { mutableStateOf<BackgroundReadiness?>(null) }
+    var connectionStatusUpdatedAt by remember { mutableLongStateOf(0L) }
+    var connectionStatusRefreshing by remember { mutableStateOf(false) }
+    var connectionStatusFeedback by remember { mutableStateOf("") }
     var startupAuditRevision by remember { mutableIntStateOf(0) }
     var hideStartupWarning by remember { mutableStateOf(false) }
     var liveLocationRelation by remember { mutableStateOf<String?>(null) }
@@ -611,6 +614,29 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
         }, "okg-s1-task").start()
     }
 
+    fun refreshConnectionStatus() {
+        if (connectionStatusRefreshing) return
+        connectionStatusRefreshing = true
+        connectionStatusFeedback = "正在主动验证已绑定设备……"
+        Thread({
+            val probe = runCatching {
+                manager.probeAsync().get(15, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            val latest = manager.snapshot()
+            val background = runCatching { BackgroundStartupCheck.inspect(context) }.getOrNull()
+            handler.post {
+                snapshot = latest
+                if (background != null) backgroundReadiness = background
+                backgroundListening = S1Runtime.isBackgroundListening()
+                connectionStatusUpdatedAt = System.currentTimeMillis()
+                connectionStatusFeedback = if (probe.isSuccess)
+                    "主动验签检查已完成；结果按各通信路径分别显示"
+                else "主动检查未完成：${probe.exceptionOrNull()?.message ?: "等待超时"}"
+                connectionStatusRefreshing = false
+            }
+        }, "okg-connection-status-refresh").apply { isDaemon = true; start() }
+    }
+
     DisposableEffect(manager, lifecycleOwner) {
         val updated = { refresh() }
         val observer = LifecycleEventObserver { _, event ->
@@ -679,6 +705,26 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
             // Signed events also push updates immediately. Avoid excessive Compose/JSON work
             // on old Android 10 hardware while leaving request feedback responsive.
             delay(if (requestingDevice != null || liveLocationRelation != null) 5_000 else 12_000)
+        }
+    }
+    LaunchedEffect(page, settingsSectionName) {
+        if (page == 3 && settingsSection == SettingsDestination.CONNECTION_STATUS) {
+            var lastProbeElapsed = 0L
+            while (true) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastProbeElapsed >= 30_000L) {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            manager.probeAsync().get(15, java.util.concurrent.TimeUnit.SECONDS)
+                        }
+                    }
+                    lastProbeElapsed = SystemClock.elapsedRealtime()
+                    connectionStatusUpdatedAt = System.currentTimeMillis()
+                }
+                snapshot = manager.snapshot()
+                backgroundListening = S1Runtime.isBackgroundListening()
+                delay(5_000L)
+            }
         }
     }
     LaunchedEffect(startupHealthRevision, startupAuditRevision) {
@@ -808,6 +854,38 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
     })
     val onlineHomeDevices = homeDevices.filter { it.online }
     val offlineHomeDevices = homeDevices.filterNot { it.online }
+    val connectionStatusUi = remember(snapshot, backgroundListening, connectionStatusUpdatedAt) {
+        val probe = S1LanService.runtimeProbe()
+        val backgroundStatus = when {
+            !backgroundListening ->
+                "持续后台监听未开启；应用在前台时仍可使用本机局域网服务"
+            probe.healthy ->
+                "健康：前台服务、调度器和 TCP 监听均达到运行条件"
+            probe.starting -> "启动或恢复中：" + (probe.failure ?: "等待首个调度周期")
+            else -> "异常：" + (probe.failure ?: "后台服务尚未达到健康条件")
+        }
+        ConnectionStatusUiState(
+            updatedAtMillis = connectionStatusUpdatedAt,
+            networkSummary = ConnectionStatusNetwork.summary(context),
+            appForeground = S1Runtime.isUiVisible(),
+            lanListening = snapshot.listening,
+            tcpListenerStatus = manager.localTcpListenerStatus(),
+            backgroundListening = backgroundListening,
+            backgroundStatus = backgroundStatus,
+            discoveredNodeCount = snapshot.nodes.size,
+            authenticatedLanRelationCount = snapshot.verifiedRelations.size,
+            discoveryError = snapshot.discoveryError,
+            privateRelayEnabled = snapshot.history.relayEnabled,
+            privateRelays = manager.privateRelayDiagnostics(),
+            publicSignalEnabled = snapshot.history.nostrRelayEnabled,
+            publicSignalConnected = manager.publicRelayReady(),
+            publicSignalStatus = manager.publicRelayStatus(),
+            directEnabled = snapshot.history.directUdpListenerEnabled,
+            directActive = manager.directActive(),
+            directStatus = manager.directStatus(),
+            peers = manager.connectionPeerDiagnostics()
+        )
+    }
     fun peerName(relationId: String, fingerprint: String): String =
         snapshot.history.peerNicknames[relationId].orEmpty().ifBlank {
             snapshot.history.verifiedPeerNicknames[relationId].orEmpty()
@@ -1124,6 +1202,13 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             style = MaterialTheme.typography.labelLarge)
                     }
+                }
+                OutlinedButton(modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        navigateTo(3)
+                        settingsSectionName = SettingsDestination.CONNECTION_STATUS.name
+                    }) {
+                    Text("查看实时连接状态 · 本机、中继与家人手机")
                 }
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(14.dp),
@@ -2600,6 +2685,10 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         "进入绑定页面，核对安全码并管理现有帮助关系。") {
                         navigateTo(1)
                     }
+                    SettingsGuideLink("实时连接状态",
+                        "随时查看本机监听、家庭中继、公共信令、UDP 直连和家人手机可达性。") {
+                        settingsSectionName = SettingsDestination.CONNECTION_STATUS.name
+                    }
                     SettingsGuideLink("应用所需权限与功能检测",
                         "在专门页面检查通知、定位、GPS、电量与网络。") {
                         settingsSectionName = SettingsDestination.SELF_CHECK.name
@@ -2621,6 +2710,21 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                     FeatureHelp("建议首次使用时先检查本机权限、连接家人的手机，" +
                         "再设置家庭中继，最后回到求助页测试。" +
                         "真实紧急情况请使用正常的求救渠道。", label = "推荐设置顺序")
+                }
+                if (settingsSection == SettingsDestination.CONNECTION_STATUS) {
+                    ConnectionStatusSection(
+                        state = connectionStatusUi,
+                        refreshing = connectionStatusRefreshing,
+                        feedback = connectionStatusFeedback,
+                        onRefresh = { refreshConnectionStatus() },
+                        onCopy = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText(
+                                "OpenKinGuard 连接诊断", connectionStatusUi.toReport()))
+                            Toast.makeText(context, "已复制脱敏连接诊断摘要", Toast.LENGTH_SHORT).show()
+                        }
+                    )
                 }
                 if (settingsSection == SettingsDestination.SELF_CHECK) {
                     Text("应用所需权限与功能检测", style = MaterialTheme.typography.titleLarge)

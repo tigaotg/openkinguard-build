@@ -64,6 +64,8 @@ internal class S2RelayClient(
     val supportsFamilyPairing: Boolean
         get() = connected && "family-peers-v1" in familyCapabilities &&
             "family-pair-v1" in familyCapabilities
+    val supportsOfflineSpool: Boolean
+        get() = connected && "family-offline-spool-v1" in familyCapabilities
     private var reconnectAttempt = 0
     @Volatile private var epoch = 0L
 

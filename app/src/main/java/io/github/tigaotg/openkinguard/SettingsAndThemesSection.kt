@@ -41,6 +41,7 @@ enum class SettingsDestination(val label: String, val summary: String) {
     PAIRING("连接家人", "绑定家人的手机、修改昵称与授权"),
     REMOTE_ASSIST("远程协助", "屏幕共享、远程点击权限、会话状态与操作指引"),
     SELF_CHECK("检测本机权限与功能", "通知、后台监听、定位、蓝牙及本机自检"),
+    CONNECTION_STATUS("实时连接状态", "查看本机、家庭中继、公共信令和每位家人的实时可达性"),
     DAILY("失联与电量提醒", "调整提醒时间和电量阈值"),
     NOTICES("通知设置", "通知权限、弹窗和本机提醒测试"),
     PRIVATE("家庭私人中继", "扫码加入路由器、查看跨网连接"),
@@ -72,9 +73,9 @@ internal object SettingsMenuLayout {
         SettingsGroup("权限和提醒", "应用权限、通知、失联提醒", listOf(
             SettingsDestination.SELF_CHECK, SettingsDestination.NOTICES,
             SettingsDestination.DAILY)),
-        SettingsGroup("网络", "私人中继、公共节点、P2P 与后台连接", listOf(
-            SettingsDestination.PRIVATE, SettingsDestination.PUBLIC,
-            SettingsDestination.BACKGROUND)),
+        SettingsGroup("网络", "实时状态、私人中继、公共节点、P2P 与后台连接", listOf(
+            SettingsDestination.CONNECTION_STATUS, SettingsDestination.PRIVATE,
+            SettingsDestination.PUBLIC, SettingsDestination.BACKGROUND)),
         SettingsGroup("穿戴和健康", "预警、加密记录、蓝牙兼容信息", listOf(
             SettingsDestination.WEARABLE_ALERTS, SettingsDestination.WEARABLE_HISTORY,
             SettingsDestination.WEARABLE_TECH)),

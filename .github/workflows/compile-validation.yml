@@ -73,6 +73,7 @@ jobs:
               --tests io.github.tigaotg.openkinguard.BackgroundTcpListenerRecoveryPolicyTest \
               --tests io.github.tigaotg.openkinguard.PublicP2pDiagnosticsTest \
               --tests io.github.tigaotg.openkinguard.FamilyRelayQueuePolicyTest \
+              --tests io.github.tigaotg.openkinguard.ConnectionStatusPolicyTest \
             --stacktrace
       - name: Preserve JVM test reports (no APK artifacts)
         if: always()
