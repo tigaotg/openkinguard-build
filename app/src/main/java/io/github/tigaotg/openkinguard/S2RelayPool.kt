@@ -42,7 +42,7 @@ internal object FamilyRelayDiscovery {
 internal class S2RelayPool(
     context: Context,
     keys: AndroidDeviceKeyStore,
-    onChanged: () -> Unit,
+    private val onChanged: () -> Unit,
     acceptInbound: (ByteArray) -> ByteArray,
     acceptPairing: (Int, String, String) -> Boolean,
     acceptPairingCancel: (Int, String, String) -> Unit,
@@ -123,9 +123,9 @@ internal class S2RelayPool(
             val sockets = selected.count { it.socketConnected }
             val authenticated = selected.count { it.connected }
             val network = if (lastDefaultNetwork == null) "无默认网络" else "默认网络可用"
-            return "$sockets/\${active.size} 个WSS连接，$authenticated/\${active.size} 个设备身份已认证（$network）；" +
+            return "$sockets/${active.size} 个WSS连接，$authenticated/${active.size} 个设备身份已认证（$network）；" +
                 selected.mapIndexed { index, client ->
-                    "节点\${index + 1}：\${client.status.take(100)}"
+                    "节点${index + 1}：${client.status.take(100)}"
                 }.joinToString("；")
         }
 

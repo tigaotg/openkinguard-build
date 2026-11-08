@@ -96,6 +96,7 @@ internal class S2RelayClient(
         epoch++
         socket?.close(1000, "configuration changed")
         socket = null
+        socketConnected = false
         connected = false
         familyCapabilities = emptySet()
         failPending("中继配置已变更")
