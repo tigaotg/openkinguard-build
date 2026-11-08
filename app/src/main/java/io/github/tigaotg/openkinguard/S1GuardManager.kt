@@ -2416,7 +2416,8 @@ class S1GuardManager(context: Context) {
         }
         val beforeName = if (kind == S1CaseWire.PROFILE)
             store.snapshot().verifiedPeerNicknames[peer.relationId] else null
-        verifyReply(reply, peer, kind, eventId, signed.message.messageId.value)
+        verifyReply(reply, peer, kind, eventId, signed.message.messageId.value,
+            if (usedRelay) System.currentTimeMillis() else 0L)
         if (usedRelay) relayVerifiedAt[peer.relationId] = System.currentTimeMillis()
         directEndpoint?.let { direct.confirmSignedReply(peer.peerFingerprint, it) }
         if (kind == S1CaseWire.PROFILE) {
@@ -2924,7 +2925,8 @@ class S1GuardManager(context: Context) {
     }
 
     private fun verifyReply(reply: SignedEnvelope, peer: SavedPeer, requestKind: String,
-                            eventId: String, expectedRequestMessageId: String? = null) {
+                            eventId: String, expectedRequestMessageId: String? = null,
+                            relayAcceptedAtMillis: Long = 0L) {
         val own = keys.createOrLoad().fingerprint
         store.update { state ->
             val admitted = admit(reply, peer, own, state)
@@ -2950,31 +2952,52 @@ class S1GuardManager(context: Context) {
                 }
                 else -> null // Remote-assist and location callers validate their own typed bodies.
             }
+            val now = System.currentTimeMillis()
+            val pendingRelayAt = expectedRequestMessageId?.let { messageId ->
+                state.deliveryOutbox.firstOrNull { it.messageId == messageId }?.relayAcceptedAt
+            } ?: 0L
+            val effectiveRelayAt = maxOf(relayAcceptedAtMillis, pendingRelayAt)
+            fun received(progress: DeliveryProgress) = progress.copy(
+                relayAcceptedAt = maxOf(progress.relayAcceptedAt, effectiveRelayAt),
+                deviceReceivedAt = maxOf(progress.deviceReceivedAt, now))
             var updated = state.copy(replay = state.replay +
                 (peer.relationId + "|" + peer.peerFingerprint to admitted),
-                lastVerifiedAt = state.lastVerifiedAt +
-                    (peer.relationId to System.currentTimeMillis()),
+                lastVerifiedAt = state.lastVerifiedAt + (peer.relationId to now),
                 lastNotifiedLossStage = state.lastNotifiedLossStage - peer.relationId)
             updated = updated.copy(cases = updated.cases.map { item ->
                 if (item.eventId != eventId) item else when (requestKind) {
-                    S1CaseWire.SOS -> if (item.ownSos)
-                        item.copy(deliveredRelations = item.deliveredRelations + peer.relationId) else item
-                    S1CaseWire.CLAIM -> if (!item.ownSos && item.relationId == peer.relationId)
+                    S1CaseWire.SOS -> if (item.ownSos) {
+                        val progress = item.deliveryProgress[peer.relationId] ?: DeliveryProgress()
+                        item.copy(deliveredRelations = item.deliveredRelations + peer.relationId,
+                            deliveryProgress = item.deliveryProgress +
+                                (peer.relationId to received(progress)))
+                    } else item
+                    S1CaseWire.CLAIM -> if (!item.ownSos && item.relationId == peer.relationId) {
+                        val progress = item.deliveryProgress[peer.relationId] ?: DeliveryProgress()
                         item.copy(status = if (kind == S1CaseWire.ACCEPT)
                             ExerciseStatus.ACCEPTED else ExerciseStatus.OPEN,
-                            acceptedBy = if (kind == S1CaseWire.ACCEPT) own else item.acceptedBy)
-                        else item
-                    S1CaseWire.CLOSE -> if (item.ownSos)
-                        item.copy(closedSyncedRelations = item.closedSyncedRelations + peer.relationId)
-                        else item
+                            acceptedBy = if (kind == S1CaseWire.ACCEPT) own else item.acceptedBy,
+                            deliveryProgress = item.deliveryProgress + (peer.relationId to
+                                received(progress).copy(familyConfirmedAt = if (kind == S1CaseWire.ACCEPT)
+                                    now else progress.familyConfirmedAt)))
+                    } else item
+                    S1CaseWire.CLOSE -> if (item.ownSos) {
+                        val progress = item.deliveryProgress[peer.relationId] ?: DeliveryProgress()
+                        item.copy(closedSyncedRelations = item.closedSyncedRelations + peer.relationId,
+                            deliveryProgress = item.deliveryProgress +
+                                (peer.relationId to received(progress)))
+                    } else item
                     else -> item
                 }
             })
             if (requestKind == S1CaseWire.CHECKIN) {
                 updated = updated.copy(checkins = updated.checkins.map { item ->
-                    if (item.own && item.eventId == eventId)
-                        item.copy(deliveredRelations = item.deliveredRelations + peer.relationId)
-                    else item
+                    if (item.own && item.eventId == eventId) {
+                        val progress = item.deliveryProgress[peer.relationId] ?: DeliveryProgress()
+                        item.copy(deliveredRelations = item.deliveredRelations + peer.relationId,
+                            deliveryProgress = item.deliveryProgress +
+                                (peer.relationId to received(progress)))
+                    } else item
                 })
             }
             if (requestKind == S1CaseWire.PROFILE) {
@@ -2991,6 +3014,10 @@ class S1GuardManager(context: Context) {
                     updated.verifiedPeerNicknames + (peer.relationId to remoteName),
                     verifiedDeviceNicknames =
                     updated.verifiedDeviceNicknames + (peer.peerFingerprint to remoteName))
+            }
+            if (expectedRequestMessageId != null) {
+                updated = updated.copy(deliveryOutbox =
+                    updated.deliveryOutbox.filterNot { it.messageId == expectedRequestMessageId })
             }
             updated to Unit
         }
