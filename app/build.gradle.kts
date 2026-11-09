@@ -24,13 +24,6 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
-        create("fieldTest") {
-            initWith(getByName("debug"))
-            applicationIdSuffix = ".fieldtest106"
-            versionNameSuffix = "-field-test"
-            signingConfig = signingConfigs.getByName("fieldTest")
-            matchingFallbacks += listOf("debug")
-        }
         create("familyRelayTest") {
             storeFile = rootProject.file("private-signing/openkinguard-family-relay-test.keystore")
             storePassword = "android"
@@ -100,6 +93,13 @@ android {
             // The earlier S1 debug-signing private key was not preserved.
             // This field-diagnostic build stays separate from the original S1 app.
             applicationIdSuffix = ".s1diagnostic"
+        }
+        create("fieldTest") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".fieldtest106"
+            versionNameSuffix = "-field-test"
+            signingConfig = signingConfigs.getByName("fieldTest")
+            matchingFallbacks += listOf("debug")
         }
         create("familyRelayTest") {
             // Disposable trial app, installed next to BOTH pilotV4 and S1 diagnostic.
