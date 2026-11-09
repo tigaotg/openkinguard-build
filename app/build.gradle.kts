@@ -93,8 +93,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 75
-        versionName = "0.10.5-connection-history-system-theme"
+        versionCode = 76
+        versionName = "0.10.6-72h-diagnostic"
     }
 
     buildTypes {
