@@ -2728,6 +2728,9 @@ fun S1CompactSection(themes: GuardThemeRepository, widgetAction: String? = null,
                         }
                     )
                 }
+                if (settingsSection == SettingsDestination.TEST_CENTER) {
+                    DiagnosticTestCenter()
+                }
                 if (settingsSection == SettingsDestination.SELF_CHECK) {
                     Text("应用所需权限与功能检测", style = MaterialTheme.typography.titleLarge)
                     Text("只有使用对应功能时才需要授权；授权通过也不代表手机一定能联网或定位。",
