@@ -5,6 +5,8 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
+import android.content.res.Configuration
+import androidx.compose.ui.graphics.toArgb
 import android.content.Intent
 import android.graphics.Color
 import android.text.format.DateFormat
@@ -123,16 +125,12 @@ internal object GuardWidgetPublisher {
     fun redraw(context: Context) {
         val app = context.applicationContext
         val manager = AppWidgetManager.getInstance(app)
-        val theme = GuardThemeRepository.included.firstOrNull { it.id ==
-            app.getSharedPreferences("guard_theme_v1", Context.MODE_PRIVATE)
-                .getString("selected_theme", GuardThemeRepository.included.first().id) }
-            ?: runCatching { GuardThemeRepository(app).selected }.getOrNull()
-            ?: GuardThemeRepository.included.first()
-        val background = Color.parseColor(theme.surface)
-        val foreground = if (theme.mode == "dark" ||
-            (Color.red(background) * .299 + Color.green(background) * .587 +
-                Color.blue(background) * .114 < 145)) Color.WHITE else Color.BLACK
-        val accent = Color.parseColor(theme.primary)
+        val systemDark = app.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+            Configuration.UI_MODE_NIGHT_YES
+        val palette = GuardThemeRepository(app).colorScheme(systemDark)
+        val background = palette.surface.toArgb()
+        val foreground = palette.onSurface.toArgb()
+        val accent = palette.primary.toArgb()
         val checkedAt = lastCheckedAt
         val fresh = GuardWidgetPresencePolicy.isCachedSnapshotFresh(checkedAt,
             listening, System.currentTimeMillis())

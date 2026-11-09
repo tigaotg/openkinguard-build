@@ -1,6 +1,9 @@
 package io.github.tigaotg.openkinguard
 
 import android.content.Context
+import android.os.Build
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -92,6 +95,7 @@ object GuardThemeFormat {
 class GuardThemeRepository(context: Context) {
     private val appContext = context.applicationContext
     companion object {
+        const val SYSTEM_THEME_ID = "system.auto"
         val included = listOf(
             GuardTheme("builtin.lavender", "经典紫", "OpenKinGuard 项目", "GPL-3.0-or-later",
                 "light", "#6851A5", "#746197", "#FAF8FF", "#FFFFFF"),
@@ -123,17 +127,18 @@ class GuardThemeRepository(context: Context) {
                 }
             }
         }
-        // 0.9.7 deliberately retires the dynamic/expressive palette. Devices
-        // upgraded from 0.9.6 return to the lightweight classic palette, but
-        // users who selected another built-in or imported palette keep it.
-        if (themes.none { it.id == selectedId }) select(included.first().id)
+        // Preserve every existing manual selection. A new opt-in setting re-enables
+        // Android 12+ wallpaper dynamic colors, without changing imported JSON format.
+        if (selectedId != SYSTEM_THEME_ID && themes.none { it.id == selectedId }) {
+            select(included.first().id)
+        }
     }
 
     val themes: List<GuardTheme> get() = included + imported
     val selected: GuardTheme get() = themes.firstOrNull { it.id == selectedId } ?: included.first()
 
     fun select(id: String) {
-        require(themes.any { it.id == id }) { "找不到这个主题" }
+        require(id == SYSTEM_THEME_ID || themes.any { it.id == id }) { "找不到这个主题" }
         selectedId = id
         prefs.edit().putString("selected_theme", id).apply()
         GuardWidgetPublisher.redraw(appContext)
@@ -166,7 +171,16 @@ class GuardThemeRepository(context: Context) {
         prefs.edit().putString("installed_themes", items.toString()).apply()
     }
 
-    fun colorScheme(): ColorScheme {
+    fun colorScheme(systemDark: Boolean = false): ColorScheme {
+        if (selectedId == SYSTEM_THEME_ID) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                return if (systemDark) dynamicDarkColorScheme(appContext)
+                    else dynamicLightColorScheme(appContext)
+            }
+            // Android 10/11 have no Material You wallpaper palette; use a
+            // readable Material3 fallback and follow the system night setting.
+            return if (systemDark) darkColorScheme() else lightColorScheme()
+        }
         val theme = selected
         fun parse(value: String) = Color(android.graphics.Color.parseColor(value))
         fun readable(value: Color) = if (value.red * .299f + value.green * .587f +

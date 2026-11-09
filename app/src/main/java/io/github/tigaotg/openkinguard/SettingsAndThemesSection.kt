@@ -189,13 +189,29 @@ fun ThemeSettingsSection(repository: GuardThemeRepository) {
         }
     }
 
-    Text("点击主题即可切换；选择会自动保存。", style = MaterialTheme.typography.bodySmall)
+    Text("点击主题即可切换；选择会自动保存。系统动态配色不能作为固定 JSON 主题导出。",
+        style = MaterialTheme.typography.bodySmall)
     if (status.isNotBlank()) {
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Text(status, modifier = Modifier.padding(12.dp))
         }
     }
     Text("选择主题", style = MaterialTheme.typography.titleLarge)
+    OutlinedCard(modifier = Modifier.fillMaxWidth().clickable {
+        repository.select(GuardThemeRepository.SYSTEM_THEME_ID)
+        status = "已开启跟随系统主题颜色"
+    }) {
+        Row(Modifier.fillMaxWidth().padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween) {
+            Column(Modifier.weight(1f)) {
+                Text("跟随系统颜色", style = MaterialTheme.typography.titleMedium)
+                Text("Android 12+ 使用系统壁纸动态配色；Android 10/11 跟随深浅色模式。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            RadioButton(selected = repository.selectedId == GuardThemeRepository.SYSTEM_THEME_ID,
+                onClick = { repository.select(GuardThemeRepository.SYSTEM_THEME_ID) })
+        }
+    }
     repository.themes.forEach { theme ->
         val active = repository.selectedId == theme.id
         OutlinedCard(modifier = Modifier.fillMaxWidth().clickable {
@@ -253,6 +269,7 @@ fun ThemeSettingsSection(repository: GuardThemeRepository) {
                 importer.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
             }) { Text("导入 JSON") }
             OutlinedButton(onClick = {
+                // System-derived palette is not an importable static JSON theme.
                 exporting = repository.selected
                 exporter.launch("OpenKinGuard_${exporting.id}.json")
             }) { Text("导出 JSON") }

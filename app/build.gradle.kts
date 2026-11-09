@@ -79,8 +79,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 74
-        versionName = "0.10.4-family-relay-audit"
+        versionCode = 75
+        versionName = "0.10.5-connection-history-system-theme"
     }
 
     buildTypes {
@@ -92,8 +92,8 @@ android {
         create("familyRelayTest") {
             // Disposable trial app, installed next to BOTH pilotV4 and S1 diagnostic.
             initWith(getByName("debug"))
-            applicationIdSuffix = ".familyrelaytest104"
-            versionNameSuffix = "-0.10.4-oneoff-test"
+            applicationIdSuffix = ".familyrelaytest105"
+            versionNameSuffix = "-0.10.5-oneoff-test"
             signingConfig = signingConfigs.getByName("familyRelayTest")
             matchingFallbacks += listOf("debug")
         }

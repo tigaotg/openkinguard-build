@@ -5,6 +5,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,8 +30,8 @@ class MainActivity : ComponentActivity() {
         incomingMedicalReminder = intent?.action == MedicalReminders.ACTION_HEALTH
         setContent {
             val themes = remember { GuardThemeRepository(applicationContext) }
-            val theme = themes.selected
-            val colors = themes.colorScheme()
+            val systemDark = isSystemInDarkTheme()
+            val colors = themes.colorScheme(systemDark)
             MaterialTheme(colorScheme = colors) {
                 SideEffect {
                     // Gesture navigation on Android 15+ can remain system-controlled.
@@ -38,7 +40,9 @@ class MainActivity : ComponentActivity() {
                         window.navigationBarColor = colors.surface.toArgb()
                     }
                     WindowCompat.getInsetsController(window, window.decorView)
-                        .isAppearanceLightNavigationBars = theme.mode != "dark"
+                        .isAppearanceLightNavigationBars = colors.surface.luminance() > 0.5f
+                    WindowCompat.getInsetsController(window, window.decorView)
+                        .isAppearanceLightStatusBars = colors.background.luminance() > 0.5f
                 }
                 S1CompactSection(themes, incomingWidgetAction,
                     onWidgetActionConsumed = { incomingWidgetAction = null },

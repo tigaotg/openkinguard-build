@@ -6,6 +6,7 @@ import java.security.MessageDigest
 internal object ConnectionHistoryPolicy {
     const val RETENTION_MS = 7L * 24 * 60 * 60 * 1_000
     const val SNAPSHOT_INTERVAL_MS = 60_000L
+    const val MONITOR_GAP_MS = 3 * 60_000L
     const val MAX_ROWS = 24_000
     const val MAX_STATE_ITEMS = 100
     const val MAX_DISPLAY_ROWS = 400
@@ -39,6 +40,18 @@ internal object ConnectionHistoryPolicy {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(relationId.toByteArray(Charsets.US_ASCII))
         return digest.take(6).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    /** Every value is a fixed status code: raw exception messages must never be written. */
+    fun relayPhase(status: String, authenticated: Boolean, socketConnected: Boolean): String = when {
+        authenticated -> "ready"
+        status.contains("路由器端未绑定") || status.contains("授权已取消") -> "denied"
+        status.contains("没有默认网络") || status.contains("等待系统默认网络") -> "waiting_network"
+        status.contains("正在重新连接") || status.contains("正在连接") || status.contains("连接中") -> "connecting"
+        status.contains("重连") || status.contains("断开") || status.contains("关闭") -> "backoff"
+        socketConnected -> "authenticating"
+        status.contains("连接") || status.contains("挑战") -> "connecting"
+        else -> "idle"
     }
 
     /** Raw diagnostics can include URLs, IPs and IDs; never persist them. */

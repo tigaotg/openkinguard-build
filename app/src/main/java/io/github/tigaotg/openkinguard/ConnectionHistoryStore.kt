@@ -62,6 +62,16 @@ internal object ConnectionHistoryStore {
                 }
             }
             var count = 0
+            val lastSnapshot = db.rawQuery(
+                "SELECT value FROM meta WHERE name='snapshot'", null).use {
+                    if (it.moveToFirst()) it.getLong(0) else 0L
+                }
+            if (lastSnapshot > 0L && now >= lastSnapshot &&
+                now - lastSnapshot > ConnectionHistoryPolicy.MONITOR_GAP_MS) {
+                add(db, now, "gap", "monitor/sampling", "unknown", "unknown",
+                    now - lastSnapshot)
+                count++
+            }
             for (event in ConnectionHistoryPolicy.transitions(
                     old.mapValues { it.value.first }, current)) {
                 val changedAt = old[event.path]?.second ?: now
@@ -75,10 +85,6 @@ internal object ConnectionHistoryStore {
                 }, SQLiteDatabase.CONFLICT_REPLACE)
                 count++
             }
-            val lastSnapshot = db.rawQuery(
-                "SELECT value FROM meta WHERE name='snapshot'", null).use {
-                    if (it.moveToFirst()) it.getLong(0) else 0L
-                }
             if (ConnectionHistoryPolicy.shouldSnapshot(lastSnapshot, now)) {
                 val sample = JSONObject()
                 current.forEach { (key, value) -> sample.put(key, value) }
@@ -117,7 +123,7 @@ internal object ConnectionHistoryStore {
                            limit: Int = ConnectionHistoryPolicy.MAX_DISPLAY_ROWS,
                            untilMillis: Long = Long.MAX_VALUE, offset: Int = 0):
         List<ConnectionHistoryEntry> {
-        val filter = if (kind in setOf("change", "snapshot", "initial")) kind else "all"
+        val filter = if (kind in setOf("change", "snapshot", "initial", "gap")) kind else "all"
         val where = if (filter == "all") "at>=? AND at<?"
             else "at>=? AND at<? AND kind=?"
         val args = if (filter == "all") arrayOf(sinceMillis.toString(), untilMillis.toString())
@@ -136,8 +142,12 @@ internal object ConnectionHistoryStore {
         return rows
     }
 
-    /** Export the entire rolling seven-day period, without a user-data or network-identity field. */
-    fun export(context: Context, asJson: Boolean, now: Long = System.currentTimeMillis()): String {
+    fun statistics(context: Context, now: Long = System.currentTimeMillis()): ConnectionOutageReport =
+        ConnectionOutageStatistics.analyze(allRecent(context, now).map {
+            ConnectionHistoryPoint(it.timeMillis, it.kind, it.path, it.before, it.after)
+        }, now)
+
+    private fun allRecent(context: Context, now: Long): List<ConnectionHistoryEntry> {
         val rows = ArrayList<ConnectionHistoryEntry>()
         var offset = 0
         while (offset < ConnectionHistoryPolicy.MAX_ROWS) {
@@ -148,6 +158,15 @@ internal object ConnectionHistoryStore {
             if (batch.size < ConnectionHistoryPolicy.MAX_DISPLAY_ROWS) break
             offset += batch.size
         }
+        return rows
+    }
+
+    /** Export state transitions and conservative outage stats (never endpoint URLs/IDs). */
+    fun export(context: Context, asJson: Boolean, now: Long = System.currentTimeMillis()): String {
+        val rows = allRecent(context, now)
+        val stats = ConnectionOutageStatistics.analyze(rows.map {
+            ConnectionHistoryPoint(it.timeMillis, it.kind, it.path, it.before, it.after)
+        }, now)
         return if (asJson) {
             val events = JSONArray()
             rows.asReversed().forEach { item ->
@@ -156,8 +175,22 @@ internal object ConnectionHistoryStore {
                     .put("previous", item.before).put("current", item.after)
                     .put("durationMs", item.durationMillis))
             }
-            JSONObject().put("format", "OpenKinGuard-connection-history-v1")
+            val outageGroups = JSONArray()
+            stats.routes.forEach { item ->
+                outageGroups.put(JSONObject().put("path", item.path)
+                    .put("disconnects", item.disconnects)
+                    .put("recoveries", item.recoveries)
+                    .put("verifiedOutageMs", item.verifiedOutageMs)
+                    .put("longestVerifiedOutageMs", item.longestVerifiedOutageMs)
+                    .put("uncertainSpans", item.uncertainSpans)
+                    .put("failureEvents", item.failureEvents)
+                    .put("lastFailureCategory", item.lastFailureCategory)
+                    .put("currentlyDisconnectedSinceMs", item.currentlyDisconnectedSinceMs))
+            }
+            JSONObject().put("format", "OpenKinGuard-connection-history-v2")
                 .put("days", 7).put("generatedAtMs", now)
+                .put("samplingGaps", stats.samplingGaps)
+                .put("outageStats", outageGroups)
                 .put("events", events).toString(2)
         } else buildString {
             appendLine("OpenKinGuard 最近7天连接历史（脱敏诊断）")
@@ -165,12 +198,20 @@ internal object ConnectionHistoryStore {
             appendLine("说明：状态不确定不等于手机关机；进程被系统停止时可能存在记录空档。")
             appendLine("只包含连接状态码和匿名代号，不包含IP、URL、指纹、密钥或原始错误。")
             appendLine("记录数：" + rows.size)
+            appendLine("监测空档次数：" + stats.samplingGaps)
+            stats.routes.forEach { item ->
+                appendLine("连接路径：${item.path}；断线 ${item.disconnects} 次；恢复 ${item.recoveries} 次；" +
+                    "已核实断线 ${item.verifiedOutageMs / 1000} 秒；最长 ${item.longestVerifiedOutageMs / 1000} 秒；" +
+                    "时长不确定 ${item.uncertainSpans} 次；" +
+                    "连接尝试失败 ${item.failureEvents} 次；最近失败 ${item.lastFailureCategory ?: "无"}；" +
+                    "尚未验证恢复 ${item.currentlyDisconnectedSinceMs != null}")
+            }
             for (entry in rows.asReversed()) {
                 append(DateFormat.getDateTimeInstance().format(Date(entry.timeMillis)))
                 append(" | ").append(entry.kind).append(" | ").append(entry.path)
                 append(" | ").append(entry.before).append(" -> ").append(entry.after)
                 if (entry.durationMillis > 0L) {
-                    append(" | 上一状态持续 ").append(entry.durationMillis / 1000L).append("秒")
+                    append(" | 上次状态变化记录间隔 ").append(entry.durationMillis / 1000L).append("秒")
                 }
                 appendLine()
             }

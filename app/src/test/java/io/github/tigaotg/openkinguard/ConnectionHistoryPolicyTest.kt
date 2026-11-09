@@ -40,6 +40,18 @@ class ConnectionHistoryPolicyTest {
         assertFalse(data.values.any { "192.168" in it || "https" in it })
     }
 
+    @Test fun relayStatesAreSafeCodesNotRawUrls() {
+        assertEquals("ready", ConnectionHistoryPolicy.relayPhase("公网中继已连接", true, true))
+        assertEquals("connecting", ConnectionHistoryPolicy.relayPhase("正在重新连接并重新认证", false, false))
+        assertEquals("backoff", ConnectionHistoryPolicy.relayPhase("中继断开 wss://private", false, false))
+        assertEquals("denied", ConnectionHistoryPolicy.relayPhase("路由器端未绑定您", false, false))
+        assertEquals("authenticating", ConnectionHistoryPolicy.relayPhase("等待挑战", false, true))
+    }
+
+    @Test fun monitorGapThresholdIsAtLeastThreeMinutes() {
+        assertEquals(180_000L, ConnectionHistoryPolicy.MONITOR_GAP_MS.toLong())
+    }
+
     @Test fun peerIdentityIsPseudonymizedAndStable() {
         val first = ConnectionHistoryPolicy.peerAlias("relation-1")
         assertEquals(first, ConnectionHistoryPolicy.peerAlias("relation-1"))

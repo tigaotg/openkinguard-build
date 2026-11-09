@@ -65,7 +65,10 @@ internal object ConnectionHistoryRecorder {
             state["$prefix/socket"] = if (node.socketConnected) "connected" else "disconnected"
             state["$prefix/auth"] = if (node.identityAuthenticated) "verified" else "unverified"
             state["$prefix/offline_spool"] = if (node.offlineSpoolSupported) "supported" else "unknown"
-            state["$prefix/failure"] = ConnectionHistoryPolicy.failureCategory(node.lastFailureReason)
+            state["$prefix/failure"] = if (node.identityAuthenticated) "none"
+                else ConnectionHistoryPolicy.failureCategory(node.lastFailureReason)
+            state["$prefix/phase"] = ConnectionHistoryPolicy.relayPhase(node.status,
+                node.identityAuthenticated, node.socketConnected)
         }
         state["nostr/enabled"] = if (current.history.nostrRelayEnabled) "yes" else "no"
         state["nostr/socket"] = if (manager.publicRelayReady()) "connected" else "disconnected"

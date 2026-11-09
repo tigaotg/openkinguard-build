@@ -43,6 +43,7 @@ internal fun ConnectionHistoryPanel() {
     var pageIndex by remember { mutableIntStateOf(0) }
     var reload by remember { mutableIntStateOf(0) }
     var events by remember { mutableStateOf<List<ConnectionHistoryEntry>>(emptyList()) }
+    var summary by remember { mutableStateOf<ConnectionOutageReport?>(null) }
     var loading by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
 
@@ -91,6 +92,9 @@ internal fun ConnectionHistoryPanel() {
             feedback = "历史查询失败：" + it.javaClass.simpleName
             emptyList()
         }
+        summary = withContext(Dispatchers.IO) {
+            runCatching { ConnectionHistoryStore.statistics(context) }.getOrNull()
+        }
         loading = false
     }
 
@@ -98,8 +102,27 @@ internal fun ConnectionHistoryPanel() {
         Column(Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("最近7天连接历史", style = MaterialTheme.typography.titleMedium)
-            Text("状态变化时记录；正常运行每分钟最多保存一次快照。手机关闭应用或进程被系统终止时可能出现记录空档。",
+            Text("状态变化时记录；正常运行每分钟最多保存一次快照。监测停止期间的断线时间无法准确还原。",
                 style = MaterialTheme.typography.bodySmall)
+            summary?.let { report ->
+                Text("七天汇总 · 监测空档 ${report.samplingGaps} 次",
+                    style = MaterialTheme.typography.titleSmall)
+                if (report.routes.isEmpty()) Text("尚无已验证连接发生断开或恢复的记录。")
+                report.routes.take(12).forEach { item ->
+                    val detail = buildString {
+                        append("${historyLabel(item.path)}：断开 ${item.disconnects} 次，")
+                        append("恢复 ${item.recoveries} 次，可核实断线 ${item.verifiedOutageMs / 1000} 秒，")
+                        append("最长 ${item.longestVerifiedOutageMs / 1000} 秒")
+                        if (item.failureEvents > 0) append("，连接尝试失败 ${item.failureEvents} 次")
+                        item.lastFailureCategory?.let { append("，最近失败分类 $it") }
+                        if (item.uncertainSpans > 0) append("，${item.uncertainSpans} 次时长不确定")
+                        if (item.currentlyDisconnectedSinceMs != null) append("，尚未验证恢复")
+                    }
+                    Text(detail, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("断线统计只计算先前验证成功、后来断开及恢复的路径；不把初次未连接当作断线。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(onClick = {
                     daysBack = (daysBack + 1).coerceAtMost(7)
@@ -113,7 +136,7 @@ internal fun ConnectionHistoryPanel() {
                 }, enabled = daysBack > 0) { Text("后一天") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("all" to "全部", "change" to "变化", "snapshot" to "快照").forEach { (value, label) ->
+                listOf("all" to "全部", "change" to "变化", "gap" to "空档", "snapshot" to "快照").forEach { (value, label) ->
                     FilterChip(selected = category == value, onClick = {
                         category = value
                         pageIndex = 0
@@ -135,7 +158,9 @@ internal fun ConnectionHistoryPanel() {
             events.forEach { event ->
                 val time = DateFormat.getDateTimeInstance().format(Date(event.timeMillis))
                 val label = historyLabel(event.path)
-                val status = if (event.kind == "snapshot") {
+                val status = if (event.kind == "gap") {
+                    "采样中断约 ${event.durationMillis / 1000L} 秒，期间的网络状态无法确定"
+                } else if (event.kind == "snapshot") {
                     val sample = runCatching { JSONObject(event.after) }.getOrNull()
                     if (sample == null) "快照内容不可用" else {
                         val names = sample.keys().asSequence().sorted().take(12).toList()
@@ -146,12 +171,13 @@ internal fun ConnectionHistoryPanel() {
                 } else {
                     event.before + " → " + event.after +
                         if (event.durationMillis > 0L)
-                            "（上一状态持续" + (event.durationMillis / 1000L) + "秒）"
+                            "（上次状态变化距今记录间隔" + (event.durationMillis / 1000L) + "秒）"
                         else ""
                 }
                 Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
                     Text(time + " · " + when (event.kind) {
                         "snapshot" -> "周期快照"
+                        "gap" -> "监测空档（不是网络断线）"
                         "initial" -> "初始状态"
                         else -> "状态变化"
                     }, style = MaterialTheme.typography.labelMedium)
@@ -174,6 +200,7 @@ internal fun ConnectionHistoryPanel() {
 }
 
 private fun historyLabel(path: String): String = when {
+    path == "monitor/sampling" -> "状态采样"
     path == "network/type" -> "网络类型"
     path == "network/validated" -> "系统网络验证"
     path == "app/foreground" -> "APP前后台"
