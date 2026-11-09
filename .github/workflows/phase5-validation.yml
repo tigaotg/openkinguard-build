@@ -7,6 +7,17 @@ on:
       - '.github/workflows/phase5-validation.yml'
       - 'scripts/acceptance/**'
       - 'docs/PHASE5_ACCEPTANCE.md'
+      - 'app/**'
+      - 'core/**'
+      - 'adapters/**'
+      - 'security/**'
+      - 'relay/**'
+      - 'openwrt-family-relay/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradle.properties'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
 
 permissions:
   contents: read
