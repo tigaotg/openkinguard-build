@@ -32,9 +32,11 @@ class SettingsNavigationLayoutTest {
 
     @Test fun networkGroupOpensItsDestinationsDirectlyWithoutThirdLevelPage() {
         val networkGroup = SettingsMenuLayout.groups.single { it.title == "网络" }
-        assertEquals(listOf(SettingsDestination.PRIVATE, SettingsDestination.PUBLIC,
+        assertEquals(listOf(SettingsDestination.CONNECTION_STATUS,
+            SettingsDestination.PRIVATE, SettingsDestination.PUBLIC,
             SettingsDestination.BACKGROUND), networkGroup.destinations)
-        assertEquals(3, networkGroup.destinations.distinct().size)
+        assertEquals(4, networkGroup.destinations.distinct().size)
+        assertTrue(SettingsMenuLayout.search("实时连接").contains(SettingsDestination.CONNECTION_STATUS))
         assertFalse(SettingsDestination.entries.any { it.name == "NETWORK" })
         assertTrue(SettingsMenuLayout.search("私人中继").contains(SettingsDestination.PRIVATE))
         assertTrue(SettingsMenuLayout.search("公共节点").contains(SettingsDestination.PUBLIC))
