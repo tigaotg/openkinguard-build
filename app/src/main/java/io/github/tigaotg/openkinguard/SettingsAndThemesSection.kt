@@ -59,6 +59,7 @@ enum class SettingsDestination(val label: String, val summary: String) {
     WIDGETS("桌面小组件", "桌面快捷操作和状态"),
     THEMES("外观", "轻量主题和首页显示方式"),
     ADVANCED("连接诊断", "设备指纹、握手记录和详细结果"),
+    TEST_CENTER("自动化测试中心", "独立运行测试、72小时监测与一键导出报告"),
     ABOUT("关于软件", "开源宗旨、作者、功能说明和 GitHub"),
 }
 
@@ -84,7 +85,7 @@ internal object SettingsMenuLayout {
             SettingsDestination.CONTACTS, SettingsDestination.MAP)),
         SettingsGroup("界面与帮助", "桌面组件、外观、使用说明、诊断", listOf(
             SettingsDestination.WIDGETS, SettingsDestination.THEMES,
-            SettingsDestination.QUICK, SettingsDestination.ADVANCED)),
+            SettingsDestination.QUICK, SettingsDestination.ADVANCED, SettingsDestination.TEST_CENTER)),
     )
 
     fun search(query: String): List<SettingsDestination> {
