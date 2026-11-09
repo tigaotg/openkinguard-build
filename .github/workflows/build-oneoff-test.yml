@@ -1,0 +1,55 @@
+name: OpenKinGuard one-off signed test APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-oneoff-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-test-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android SDK
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Generate separate diagnostic signing key
+        run: |
+          mkdir -p private-signing
+          keytool -genkeypair -noprompt \
+            -keystore private-signing/openkinguard-family-relay-test.keystore \
+            -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 365 \
+            -dname 'CN=OpenKinGuard one-off tester,OU=Diagnostics,O=OpenKinGuard,C=CN'
+      - name: Build signed standalone Android test APK
+        run: |
+          sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
+          sed -i 's/compose-bom:2026.09.00/compose-bom:2025.10.00/' app/build.gradle.kts
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleFamilyRelayTest --stacktrace
+      - name: Verify APK signature and stage output
+        run: |
+          mkdir -p build-out
+          APK_FILE=$(find app/build/outputs/apk/familyRelayTest -maxdepth 1 -type f -name '*.apk' -print -quit)
+          test -n "$APK_FILE" || exit 1
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK_FILE"
+          cp "$APK_FILE" build-out/OpenKinGuard-0.10.5-oneoff-signed-test.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenKinGuard-0.10.5-oneoff-signed-test
+          path: build-out/*.apk
+          if-no-files-found: error
+          retention-days: 14
