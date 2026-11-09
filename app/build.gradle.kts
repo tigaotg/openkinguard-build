@@ -24,8 +24,6 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
-        // One-off diagnostic build has a separate app ID and ephemeral CI key.
-        // Never re-sign the installed S1 diagnostic package with a new key.
         create("fieldTest") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".fieldtest106"
