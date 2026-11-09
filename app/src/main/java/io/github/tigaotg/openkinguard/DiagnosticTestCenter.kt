@@ -30,7 +30,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
 import java.util.Date
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -93,7 +92,7 @@ internal fun DiagnosticTestCenter() {
                             .put("androidSdk", Build.VERSION.SDK_INT)
                             .put("packageName", context.packageName)
                             .put("versionName", packageInfo.versionName ?: "unknown")
-                            .put("versionCode", if (Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode else @Suppress("DEPRECATION") packageInfo.versionCode.toLong())
+                            .put("versionCode", packageInfo.longVersionCode)
                             .put("backgroundListenerEnabled", S1Runtime.isBackgroundListening())
                             .put("historyWindowDays", 7)
                             .put("limitations", "Connection history is captured by the existing background monitor. Android force-stop, power-off, or OS process termination can create unobserved gaps; see samplingGaps.")
