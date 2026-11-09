@@ -17,8 +17,22 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // One-off field-test build has a separate app ID and ephemeral CI key.
+        create("fieldTest") {
+            storeFile = rootProject.file("private-signing/openkinguard-field-test.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         // One-off diagnostic build has a separate app ID and ephemeral CI key.
         // Never re-sign the installed S1 diagnostic package with a new key.
+        create("fieldTest") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".fieldtest106"
+            versionNameSuffix = "-field-test"
+            signingConfig = signingConfigs.getByName("fieldTest")
+            matchingFallbacks += listOf("debug")
+        }
         create("familyRelayTest") {
             storeFile = rootProject.file("private-signing/openkinguard-family-relay-test.keystore")
             storePassword = "android"
