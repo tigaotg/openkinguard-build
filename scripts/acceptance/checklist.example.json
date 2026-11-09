@@ -1,0 +1,13 @@
+{
+  "sos_receiver_signed_receipt": false,
+  "sos_family_explicit_confirmation": false,
+  "checkin_receiver_signed_receipt": false,
+  "offline_queue_recovery": false,
+  "wifi_to_cellular_and_back": false,
+  "relay_service_restart": false,
+  "background_screen_off_delivery": false,
+  "no_duplicate_sos_notification": false,
+  "app_restart_preserves_identity_and_history": false,
+  "seven_day_redacted_history_export": false,
+  "critical_unresolved_defects": true
+}
