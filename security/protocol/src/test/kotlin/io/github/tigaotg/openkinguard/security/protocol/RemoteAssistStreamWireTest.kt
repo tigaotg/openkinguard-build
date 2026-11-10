@@ -81,4 +81,37 @@ class RemoteAssistStreamWireTest {
                 }))
         }.isFailure)
     }
+    @Test fun twoPeerSignedRemoteControlsAndRepliesRoundTrip() {
+        val helper = java.security.KeyPairGenerator.getInstance("EC").apply {
+            initialize(256)
+        }.generateKeyPair()
+        val subject = java.security.KeyPairGenerator.getInstance("EC").apply {
+            initialize(256)
+        }.generateKeyPair()
+        for (kind in listOf(RemoteAssistStreamWire.TAP,
+                RemoteAssistStreamWire.SWIPE, RemoteAssistStreamWire.BACK,
+                RemoteAssistStreamWire.HOME, RemoteAssistStreamWire.RECENTS)) {
+            val data = when (kind) {
+                RemoteAssistStreamWire.TAP -> RemoteAssistStreamWire.tap(relation, session, 2000, 8000)
+                RemoteAssistStreamWire.SWIPE -> RemoteAssistStreamWire.swipe(
+                    relation, session, 2000, 8000, 2000, 3000)
+                else -> RemoteAssistStreamWire.action(relation, session, kind)
+            }
+            val outgoing = envelope(kind, data)
+            val incoming = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(outgoing,
+                SignedProtocol.sign(outgoing, helper.private))))
+            assertTrue(SignedProtocol.verify(incoming.message, incoming.signature, helper.public))
+            val decoded = RemoteAssistStreamWire.decode(incoming.message)
+            assertEquals(session, decoded.sessionId)
+            assertEquals(relation, decoded.relationId)
+            val ack = envelope(RemoteAssistStreamWire.ACK,
+                RemoteAssistStreamWire.ack(relation, session, outgoing.messageId.value))
+            val verifiedAck = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(ack,
+                SignedProtocol.sign(ack, subject.private))))
+            assertTrue(SignedProtocol.verify(verifiedAck.message, verifiedAck.signature, subject.public))
+            assertEquals(outgoing.messageId.value,
+                RemoteAssistStreamWire.decode(verifiedAck.message).respondsTo)
+        }
+    }
+
 }
