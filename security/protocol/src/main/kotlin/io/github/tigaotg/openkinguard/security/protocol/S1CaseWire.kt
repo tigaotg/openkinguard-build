@@ -121,16 +121,22 @@ object S1CaseWire {
             require(fields[4].length in 1..96) { "Invalid signed profile size" }
             decodeNickname(fields[4])
         } else null
-        val createdAt = if (request && event && fields.size >= 4) {
+        // SOS/check-in can legally carry either a source timestamp, a signed
+        // nickname, both, or neither. A fourth field beginning N: is NOT a time.
+        val createdAt = if (request && event && fields.size >= 4 &&
+            !fields[3].startsWith("N:")) {
             val raw = fields[3]
             val time = raw.toLongOrNull()
             require(time != null && time in 1..253_402_300_799_000L &&
                 raw == time.toString()) { "Invalid signed event timestamp" }
             time
         } else null
+        require(!request || !event || fields.size != 5 || createdAt != null) {
+            "Signed nickname requires a valid preceding event timestamp"
+        }
         val senderNickname = if (request && fields.size >= 4) {
             val encoded = if (event && fields.size == 5) fields[4]
-                else if (!event && fields.size == 4 && fields[3].startsWith("N:")) fields[3]
+                else if (fields.size == 4 && fields[3].startsWith("N:")) fields[3]
                 else null
             encoded?.let { decodeNickname(it.removePrefix("N:")) }
         } else null
