@@ -2807,6 +2807,28 @@ class S1GuardManager(context: Context) {
                 lanFailure = io.message?.take(90)
             }
         }
+        // PING is the identity challenge used by recovery itself: never recurse
+        // into recovery for a heartbeat, and never trust an mDNS nickname alone.
+        val isIdentityProbe = runCatching {
+            LanTestWire.decode(frame).message.payloadKind == LanTestWire.PING
+        }.getOrDefault(false)
+        if (!isIdentityProbe && (node == null || lanFailure != null)) {
+            val recovered = recoverVerifiedLanNode(peer)
+            if (recovered != null && recovered != node) {
+                try {
+                    val answer = Socket().use { socket ->
+                        socket.connect(InetSocketAddress(recovered.address, recovered.port), 2500)
+                        socket.soTimeout = timeoutMillis
+                        writePacket(socket, frame)
+                        readPacket(socket)
+                    }
+                    return SendResult(answer, false, null)
+                } catch (failure: java.io.IOException) {
+                    lanFailure = "重验后 TCP 失败：" +
+                        (failure.message ?: failure.javaClass.simpleName).take(80)
+                }
+            }
+        }
         if (direct.hasCandidates(peer.peerFingerprint)) {
             try {
                 val result = direct.request(peer.peerFingerprint, frame, timeoutMillis)
