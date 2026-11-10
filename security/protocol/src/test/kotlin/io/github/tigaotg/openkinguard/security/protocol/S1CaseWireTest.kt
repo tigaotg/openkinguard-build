@@ -213,4 +213,31 @@ class S1CaseWireTest {
         assertTrue(runCatching { S1CaseWire.request(relation, event,
             senderNickname = "恶意\n名称") }.isFailure)
     }
+    @Test fun twoPeerSimulatorAcceptsNicknameOnlySosAndCheckin() {
+        // A and B already have the same authorized relation. The sender can
+        // transmit a signed event before its originating timestamp is cached.
+        val sender = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
+        val receiver = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
+        for (kind in listOf(S1CaseWire.SOS, S1CaseWire.CHECKIN)) {
+            val body = S1CaseWire.request(relation, event, senderNickname = "家人手机")
+            val outbound = wire(kind, body)
+            val received = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(
+                outbound, SignedProtocol.sign(outbound, sender.private))))
+            assertTrue(SignedProtocol.verify(received.message, received.signature, sender.public))
+            assertEquals(relation, S1CaseWire.body(received.message).relationId)
+            val parsed = S1CaseWire.bodyDecrypted(received.message, body)
+            assertEquals("家人手机", parsed.senderNickname)
+            assertNull(parsed.eventCreatedAtMillis)
+            val receiptKind = if (kind == S1CaseWire.SOS)
+                S1CaseWire.RECEIPT else S1CaseWire.CHECKIN_RECEIPT
+            val receiptPlain = S1CaseWire.response(relation, event, received.message.messageId.value)
+            val receiptMessage = wire(receiptKind, receiptPlain)
+            val receipt = LanTestWire.decode(LanTestWire.encode(SignedEnvelope(
+                receiptMessage, SignedProtocol.sign(receiptMessage, receiver.private))))
+            assertTrue(SignedProtocol.verify(receipt.message, receipt.signature, receiver.public))
+            assertEquals(received.message.messageId.value,
+                S1CaseWire.bodyDecrypted(receipt.message, receiptPlain).respondingTo)
+        }
+    }
+
 }
