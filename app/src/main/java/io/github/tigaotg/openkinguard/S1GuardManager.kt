@@ -2110,7 +2110,7 @@ class S1GuardManager(context: Context) {
                     var authenticated = false
                     for (node in candidates) {
                         try {
-                            request(peer, node, LanTestWire.PING, UUID.randomUUID().toString())
+                            request(peer, node, LanTestWire.PING, UUID.randomUUID().toString(), lanOnly = true)
                             verified[peer.relationId] = node.serviceName
                             if (pinned != node.serviceName)
                                 diagnostic("公钥认证成功", "关系 ${peer.relationId.take(8)}，连接已更新")
@@ -2543,7 +2543,7 @@ class S1GuardManager(context: Context) {
         }
         for (candidate in candidates) {
             try {
-                request(peer, candidate, LanTestWire.PING, UUID.randomUUID().toString())
+                request(peer, candidate, LanTestWire.PING, UUID.randomUUID().toString(), lanOnly = true)
                 verified[peer.relationId] = candidate.serviceName
                 return candidate
             } catch (failure: Exception) {
@@ -2674,7 +2674,8 @@ class S1GuardManager(context: Context) {
     }
 
     /** Sends one signed case packet; every SOS/check-in/control body is S4 encrypted. */
-    private fun request(peer: SavedPeer, node: DiscoveredNode?, kind: String, eventId: String): String {
+    private fun request(peer: SavedPeer, node: DiscoveredNode?, kind: String,
+                        eventId: String, lanOnly: Boolean = false): String {
         require(node == null || node.port == LanTestWire.PORT)
         if (kind in S1CaseWire.encryptedKinds) ensurePeerEncryptionCard(peer, node)
         val body = when {
@@ -2697,7 +2698,8 @@ class S1GuardManager(context: Context) {
         val (replyBytes, usedRelay, directEndpoint) = sendSignedFrame(peer, node,
             LanTestWire.encode(signed), 3000,
             allowTemporaryQueue = store.snapshot().relayOfflineQueueEnabled &&
-                kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN))
+                kind in setOf(S1CaseWire.SOS, S1CaseWire.CHECKIN),
+            lanOnly = lanOnly)
         val reply = LanTestWire.decode(replyBytes)
         val responseKind = reply.message.payloadKind
         if (kind == LanTestWire.PING) {
@@ -2791,7 +2793,8 @@ class S1GuardManager(context: Context) {
     private fun sendSignedFrame(peer: SavedPeer, node: DiscoveredNode?, frame: ByteArray,
                                 timeoutMillis: Int,
                                 allowTemporaryQueue: Boolean = false,
-                                allowRelay: Boolean = true): SendResult {
+                                allowRelay: Boolean = true,
+                                lanOnly: Boolean = false): SendResult {
         var lanFailure: String? = null
         var directFailure: String? = null
         if (node != null) {
@@ -2807,6 +2810,8 @@ class S1GuardManager(context: Context) {
                 lanFailure = io.message?.take(90)
             }
         }
+        if (lanOnly) throw java.io.IOException("LAN签名验证未通过：" +
+            (lanFailure ?: "局域网节点不存在"))
         // PING is the identity challenge used by recovery itself: never recurse
         // into recovery for a heartbeat, and never trust an mDNS nickname alone.
         val isIdentityProbe = runCatching {
