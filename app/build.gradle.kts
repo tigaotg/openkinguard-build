@@ -84,8 +84,8 @@ android {
         applicationId = "io.github.tigaotg.openkinguard.debug"
         minSdk = 29
         targetSdk = 36
-        versionCode = 76
-        versionName = "0.10.6-72h-diagnostic"
+        versionCode = 77
+        versionName = "0.10.7-lan-control-fix"
     }
 
     buildTypes {
