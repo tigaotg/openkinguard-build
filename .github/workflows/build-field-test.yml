@@ -1,4 +1,4 @@
-name: OpenKinGuard 0.10.6 72-hour field-test APK
+name: OpenKinGuard 0.10.7 72-hour field-test APK
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
             -keystore private-signing/openkinguard-field-test.keystore \
             -storepass android -keypass android -alias androiddebugkey \
             -keyalg RSA -keysize 2048 -validity 365 \
-            -dname 'CN=OpenKinGuard 0.10.6 Field Test,OU=Diagnostics,O=OpenKinGuard,C=CN'
+            -dname 'CN=OpenKinGuard 0.10.7 Field Test,OU=Diagnostics,O=OpenKinGuard,C=CN'
       - name: Run focused unit tests and assemble field-test APK
         run: |
           sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
@@ -56,11 +56,11 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK_FILE"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK_FILE" | head -n 3
           mkdir -p build-out
-          cp "$APK_FILE" build-out/OpenKinGuard-0.10.6-72h-field-test.apk
+          cp "$APK_FILE" build-out/OpenKinGuard-0.10.7-72h-field-test.apk
           sha256sum build-out/*.apk > build-out/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-0.10.6-72h-field-test
+          name: OpenKinGuard-0.10.7-72h-field-test
           path: build-out/*
           if-no-files-found: error
           retention-days: 14
@@ -68,7 +68,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: OpenKinGuard-0.10.6-field-test-failure-reports
+          name: OpenKinGuard-0.10.7-field-test-failure-reports
           path: |
             app/build/reports/tests/**
             app/build/test-results/**
