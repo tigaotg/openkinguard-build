@@ -3230,19 +3230,27 @@ class S1GuardManager(context: Context) {
                     remotePeerDiagnosticAt = System.currentTimeMillis()
                     signal()
                 }
-                RemoteAssistStreamWire.TAP -> RemoteAssistGestureService.tap(
+                RemoteAssistStreamWire.TAP -> require(RemoteAssistGestureService.tap(
                     packet.sessionId, packet.x, packet.y) {
                         authorizedRemoteControl(packet.sessionId)
-                    }
-                RemoteAssistStreamWire.SWIPE -> RemoteAssistGestureService.swipe(
+                    }) { "被控端无障碍操作未被系统接受，请检查无障碍授权和锁屏状态" }
+                RemoteAssistStreamWire.SWIPE -> require(RemoteAssistGestureService.swipe(
                     packet.sessionId, packet.x, packet.y, packet.x2, packet.y2,
-                    packet.durationMs) { authorizedRemoteControl(packet.sessionId) }
-                RemoteAssistStreamWire.BACK -> RemoteAssistGestureService.back(
-                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }
-                RemoteAssistStreamWire.HOME -> RemoteAssistGestureService.home(
-                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }
-                RemoteAssistStreamWire.RECENTS -> RemoteAssistGestureService.recents(
-                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }
+                    packet.durationMs) { authorizedRemoteControl(packet.sessionId) }) {
+                    "被控端无障碍操作未被系统接受，请检查无障碍授权和锁屏状态"
+                }
+                RemoteAssistStreamWire.BACK -> require(RemoteAssistGestureService.back(
+                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }) {
+                    "被控端无障碍操作未被系统接受，请检查无障碍授权和锁屏状态"
+                }
+                RemoteAssistStreamWire.HOME -> require(RemoteAssistGestureService.home(
+                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }) {
+                    "被控端无障碍操作未被系统接受，请检查无障碍授权和锁屏状态"
+                }
+                RemoteAssistStreamWire.RECENTS -> require(RemoteAssistGestureService.recents(
+                    packet.sessionId) { authorizedRemoteControl(packet.sessionId) }) {
+                    "被控端无障碍操作未被系统接受，请检查无障碍授权和锁屏状态"
+                }
             }
         }
         val ack = signedRemoteStreamPacket(peer, RemoteAssistStreamWire.ACK, packet.sessionId,
