@@ -203,9 +203,14 @@ class S1CaseWireTest {
     }
 
     @Test fun nicknamesAreStrictAndCannotBeConfusedWithSourceTimestamps() {
-        val incorrect = listOf("R|$relation|$event|N:YWJj",
+        // The nickname-only form is valid; what must stay forbidden is
+        // a malformed nickname, an invalid timestamp or additional fields.
+        assertEquals("abc", decoded(S1CaseWire.SOS,
+            "R|$relation|$event|N:YWJj".toByteArray(Charsets.UTF_8)).senderNickname)
+        val incorrect = listOf("R|$relation|$event|N:",
             "R|$relation|$event|123|N:", "R|$relation|$event|123|N:###",
-            "R|$relation|$event|123|N:YWJj|extra")
+            "R|$relation|$event|123|N:YWJj|extra",
+            "R|$relation|$event|N:YWJj|N:YWJj")
         incorrect.forEach { payload ->
             assertTrue(runCatching { decoded(S1CaseWire.SOS,
                 payload.toByteArray(Charsets.UTF_8)) }.isFailure)
