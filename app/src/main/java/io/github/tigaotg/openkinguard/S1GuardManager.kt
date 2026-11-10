@@ -2530,6 +2530,34 @@ class S1GuardManager(context: Context) {
     }
 
     /** Local encrypted outbox survives process death; optional relay RAM queue is not the source of truth. */
+    /**
+     * The mDNS cache and the verified service-name map can diverge after Wi-Fi
+     * changes. Before declaring an SOS/check-in unroutable, challenge every
+     * currently discovered LAN endpoint with the *pinned* peer identity.
+     * A nickname/IP alone is never enough to authorize an endpoint.
+     */
+    private fun recoverVerifiedLanNode(peer: SavedPeer): DiscoveredNode? {
+        val saved = verified[peer.relationId]
+        val candidates = nodes.values.toList().sortedBy {
+            if (it.serviceName == saved) 0 else 1
+        }
+        for (candidate in candidates) {
+            try {
+                request(peer, candidate, LanTestWire.PING, UUID.randomUUID().toString())
+                verified[peer.relationId] = candidate.serviceName
+                return candidate
+            } catch (failure: Exception) {
+                diagnostic("局域网重验失败",
+                    "关系 ${peer.relationId.take(8)} / ${candidate.serviceName.take(24)}：" +
+                        (failure.message ?: failure.javaClass.simpleName))
+            }
+        }
+        return null
+    }
+
+    private fun authenticatedLanNode(peer: SavedPeer): DiscoveredNode? =
+        verified[peer.relationId]?.let { nodes[it] } ?: recoverVerifiedLanNode(peer)
+
     fun deliverPending(): List<String> {
         val errors = mutableListOf<String>()
         val state = store.snapshot()
@@ -2567,7 +2595,7 @@ class S1GuardManager(context: Context) {
             for (peer in relations().filter { it.role == PairingRole.SUBJECT }) {
                 if (closing && peer.relationId in item.closedSyncedRelations) continue
                 if (!closing && peer.relationId in item.deliveredRelations) continue
-                val endpoint = verified[peer.relationId]?.let { nodes[it] }
+                val endpoint = authenticatedLanNode(peer)
                 try {
                     deliverCaseOutbox(peer, endpoint, kind, item.eventId)
                 } catch (error: Exception) {
@@ -2583,7 +2611,7 @@ class S1GuardManager(context: Context) {
             for (peer in relations().filter { it.role == PairingRole.SUBJECT &&
                 DeviceActionPolicy.canDeliverCheckin(checkin.targetRelationId, it.relationId) }) {
                 if (peer.relationId in checkin.deliveredRelations) continue
-                val endpoint = verified[peer.relationId]?.let { nodes[it] }
+                val endpoint = authenticatedLanNode(peer)
                 try {
                     deliverCaseOutbox(peer, endpoint, S1CaseWire.CHECKIN, checkin.eventId)
                 } catch (error: Exception) {
@@ -2599,7 +2627,7 @@ class S1GuardManager(context: Context) {
             val peer = relations().firstOrNull {
                 it.role == PairingRole.HELPER && it.relationId == checkin.relationId
             } ?: continue
-            val endpoint = verified[peer.relationId]?.let { nodes[it] }
+            val endpoint = authenticatedLanNode(peer)
             try {
                 deliverCaseOutbox(peer, endpoint, S1CaseWire.CHECKIN_CONFIRM, checkin.eventId)
             } catch (error: Exception) {
@@ -2803,11 +2831,12 @@ class S1GuardManager(context: Context) {
             "当前没有可用直连，因此未发送画面。" +
             (directFailure?.let { "P2P：$it；" } ?: "") +
             (lanFailure?.let { "局域网：$it" } ?: ""))
-        throw java.io.IOException("无法建立经过验签的公网直连，重要消息未送达。" +
-            "公共Nostr节点禁止转发SOS/定位；" +
-            (directFailure ?: "未收到对端UDP候选或直连测试未启动") +
-            (lanFailure?.let { "；局域网：$it" } ?: "") +
-            "；可另行配置自己的私人中继")
+        throw java.io.IOException("业务消息未得到对端签名回执。" +
+            (lanFailure?.let { "局域网 TCP 失败：$it；" }
+                ?: if (node == null) "当前没有已验签的局域网端点；" else "") +
+            "UDP直连：" + (directFailure ?: "无可用的经过验证的候选地址") + "；" +
+            if (relay.connected) "私人中继未完成业务发送"
+            else "私人中继未连接；公共 Nostr 仅用于信令，不转发 SOS")
     }
 
     private fun processInbound(socket: Socket) {
@@ -3179,6 +3208,13 @@ class S1GuardManager(context: Context) {
             } else session.direction == RemoteAssistConsent.Direction.INCOMING &&
                 session.phase == RemoteAssistConsent.Phase.ACTIVE)) {
             "本次远程协助未经授权或已经结束"
+        }
+        if (msg.payloadKind in setOf(RemoteAssistStreamWire.TAP,
+                RemoteAssistStreamWire.SWIPE, RemoteAssistStreamWire.BACK,
+                RemoteAssistStreamWire.HOME, RemoteAssistStreamWire.RECENTS)) {
+            require(RemoteAssistGestureService.enabled()) {
+                "被控端无障碍服务未运行，不能执行远程控制；请在被控手机上手动启用"
+            }
         }
         val fresh = admitRemoteStream(signed, peer, packet.sessionId)
         if (fresh) {
