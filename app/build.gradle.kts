@@ -96,7 +96,7 @@ android {
         }
         create("fieldTest") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".fieldtest106"
+            applicationIdSuffix = ".fieldtest107"
             versionNameSuffix = "-field-test"
             signingConfig = signingConfigs.getByName("fieldTest")
             matchingFallbacks += listOf("debug")
